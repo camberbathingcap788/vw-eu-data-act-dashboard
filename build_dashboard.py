@@ -229,6 +229,433 @@ THERMAL_MODE_LABELS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Bundled Data Dictionary content — extracted once from VW's
+# "251022_01_SVK_DataDictionary_V4.0 - Historical Data" PDF (11.09.2025), so
+# no PDF is needed at runtime. If a dictionary PDF sits next to the export it
+# is parsed and takes precedence (useful when VW publishes a newer version).
+BUNDLED_DICTIONARY_INFO = {
+    "keys": 5140,
+    "uuidOccurrences": 5150,
+    "version": "V4.0 (11.09.2025), bundled",
+    "terms": {
+        "warninglightdata.messageId": True,
+        "warninglightdata.priority": True,
+        "warninglightdata.serviceLead": True,
+        "payloadDecoded_warnings_id": True,
+        "payloadDecoded_warnings_fields": True,
+        "ilfdia.status": True,
+    },
+}
+
+BUNDLED_FIELD_DESCRIPTIONS = {
+    '1023421177-10-96':
+        'Data set that contains information about the unit of distance measurement used in the vehicle. 0x0 = km 0x1 = miles',
+    '1023421179-0-98':
+        'Data set that contains information about the temperature unit settings. 0x0 = Celsius 0x1 = Fahrenheit',
+    '1023421180-0-99':
+        'Data set that specifies the volume unit. 0x0 = Liter 0x1 = Gallon (UK) 0x2 = Gallon (US)',
+    '1023421181-0-100':
+        'Data set that contains information about the unit of measurement used for fuel consumption. 0x0 = mpg_UK 0x1 = mpg_US 0x2 = l_per_100km 0x3 = km_per_l',
+    '1023421182-10-101':
+        'Data set that contains information about the pressure unit settings. 0x0 = bar 0x1 = PSI 0x2 = kPa',
+    '1023421183-0-102':
+        'Data set that specifies the unit of measurement for gas consumption. 0x0 = kg_per_100km 0x1 = km_per_kg 0x2 = m3_per_100km 0x3 = km_per_m3 0x4 = miles_per_lbs 0x5 = miles_per_yard3 0x6 = miles_per_kg (DF3.5) 0x7 = miles_',
+    '1023421184-0-103':
+        'Data set that contains information about the unit of mass used in the vehicle, represented as an integer value. 0x0 = kg 0x1 = lbs',
+    '1023421185-10-104':
+        'Data set that specifies the format in which the date is displayed in the vehicle. 0x0 = day / month / year 0x1 = month / day / year 0x2 = year / month / day',
+    '1023421186-0-105':
+        'Data set that contains information about the time display format settings in the vehicle. 0x0 = 24h 0x1 = 12h AM/PM',
+    '1023421187-10-106':
+        'Data set that specifies the unit of measurement for electric energy consumption or efficiency in a vehicle. 0x0 = kWh_per_100km 0x1 = km_per_kWh 0x2 = kWh_per_100miles 0x3 = miles_per_kWh 0x4 = miles_per_gallon_equival e',
+    '1056976645-10-261':
+        'Data set that provides information about the activation status of the Travel Assist Augmented Reality (AR) feature. On/Off',
+    '1056976901-10-157':
+        'Data set that contains information about the rotation angle of the Head- Up Display (HUD) in percentage values. 0% - 100%',
+    '1056976903-10-9':
+        'Data set that contains information about the activation status of the alternative color design feature. On/Off',
+    '1056976905-10-9':
+        'Data set that contains information about the activation status of the Head-Up Display (HUD). On/Off',
+    '1056976909-10-9':
+        'Data set that provides information about the activation status of warning messages. On/Off',
+    '1224751772-10-170':
+        "Data set that contains information about the user's preference for online linking settings, which can be configured as off, manual, or automatic. 2: off; 1: manual; 0: automatic",
+    '1224751773-10-171':
+        'Online Audio Quality 1: low; 0: high',
+    '1224751775-0-173':
+        'Data set that contains information about the sorting preferences for FM station lists. 0: Alphabetic; 1: Grouped; 2: Frequency; 3: Genre; 4: HdRadioFirst',
+    '1224751780-0-176':
+        'Data set that contains information about the FM alternative frequency setting, indicating whether it is enabled or disabled. 0 = off; 1 = on',
+    '1224751781-0-29':
+        'Additional Online Metadata 0 = off; 1 = on',
+    '1224751784-0-179':
+        'Rds Regional Setting 1: Fixed; 2: Automatic',
+    '1224751785-0-180':
+        'Data set that contains information about the configuration of arrow key functionality, specifying whether it is set to navigate through a station list or a preset list. 1: Station List; 0: Preset List',
+    '1224751786-10-8':
+        'Traffic Program Settings 0 = off; 1 = on',
+    '1224751787-0-29':
+        'Data set that contains information about the activation status of the radio text feature. 0 = off; 1 = on',
+    '1224751789-0-29':
+        'Data set that contains information about the activation status of other announcements, represented as a boolean value. 0 = off; 1 = on',
+    '1224751791-0-182':
+        'Data set that contains information about the activation status of the Radio Data System (RDS) feature. 0 = off; 1 = on',
+    '1224751792-0-29':
+        'Data set that contains information about the automatic selection of station logos, indicating whether this feature is enabled or disabled. 0 = off; 1 = on',
+    '1224751793-0-183':
+        'Logo Region Setting -1 = no user selection; 1= automatic; 2-255: specific country or region according to the data base mapping',
+    '1224751797-0-185':
+        "Show Stations Settings Data type: byte, '1: FM, 0: FM/DAB u",
+    '1224751798-0-29':
+        'Setting DAB Soft Linking 0 = off; 1 = on',
+    '1224751803-0-188':
+        'Data set that contains information about the last situation mode (LSM) for Digital Audio Broadcasting (DAB). This includes details such as ensemble identifiers, service identifiers, slideshow availability, program type c',
+    '1224751804-0-16':
+        'Data set that contains information about the last situation mode related to web-based media playback, including details such as the name of the media, station identification, whether the media is a podcast, the episode k',
+    '1224751806-0-190':
+        'Data set that contains structured information, including a frequency value and a name field, related to AM_TI LSM. struct { AM_TILSM.freq: int64;, AM_TILSM.name[16]: utf8;, } struct',
+    '1224751822-0-399':
+        'Data set that contains information about the activation status of the DAB slideshow feature. 0 = off; 1 = on',
+    '1358973503-0-29':
+        'Data set that contains information about the activation status of the wake-up phrase functionality. 0 = off; 1 = on',
+    '1358973506-0-254':
+        'Data set that contains information about the type of voice setting configured in the vehicle.',
+    '1358973513-0-257':
+        'Data set that contains configuration information for the main menu, specifically the arrangement of all tiles. struct{long:64[64]} struct',
+    '1358973514-0-258':
+        'Data set that contains structured information represented as an array of eight elements, each consisting of a 32-bit integer and a long integer, intended for use in a control center interface. struct{ int32 long }[8] str',
+    '1358973516-0-256':
+        'Data set that contains information about whether the time display is enabled or disabled in standby mode. 0 = off; 1 = on',
+    '1358973520-0-262':
+        'Offclock Layout OffclockLayout',
+    '1358973521-0-263':
+        'Homscreen Page ID Note: value range added automatically',
+    '1358973522-0-264':
+        'Additional Keyboard Languages long:64; Note: value range automatically added',
+    '1358973524-0-29':
+        'Data set that contains information about the activation status of the end tone in the voice dialogue system. 0 = off; 1 = on',
+    '1358973530-0-29':
+        'Data set that contains information about the activation status of the end tone for voice control. 0 = off; 1 = on',
+    '1358973531-0-29':
+        'Data set that contains information about the input tone status in the voice dialogue system. 0 = off; 1 = on',
+    '1358973568-0-453':
+        'Data set that contains information about the configuration of top bar favorites in the vehicle\'s user interface. [{datatype:", description":"struct{int32 long}[8]", min:", max":"", stepsize:", default":"", datalength:"}]',
+    '1358973572-0-640':
+        'Data set that contains information about a customizable wake-up phrase, represented as a string data type.',
+    '1358973574-0-636':
+        'Second Static Wakeup Phrase 0 = off; 1 = on',
+    '1358973629-0-8':
+        'Data set that contains information about the activation status of a custom wake-up phrase. 0 = off; 1 = on',
+    '150999945-0-36':
+        'Off Operation 0 = off; 1 = on u',
+    '150999947-0-36':
+        'Data set that contains information about the status of the rear lock. 0 = off; 1 = on u',
+    '150999949-0-36':
+        'Auto Zone Front Driver 0 = off; 1 = on u',
+    '150999953-0-55':
+        'Data set that contains the target temperature values for the driver zone. 10 â\x80 ¦ 35.5 Â°C (columns Y - AA actual physical values, not raw values? conversion raw value - &gt; physical value?) u',
+    '150999954-0-55':
+        'Data set that contains the target temperature values for the passenger zone. 10 â\x80 ¦ 35.5 Â°C (columns Y - AA actual physical values, not raw values? conversion raw value - &gt; physical value?) u',
+    '150999955-0-55':
+        'Data set that provides information about the target temperature value for Zone 3, 10 â\x80 ¦ 35.5 Â°C (columns Y - AA actual physical values, not raw values? conversion raw value - &gt; physical value?) u',
+    '150999968-0-36':
+        'Sync Status 0 = off; 1 = on u',
+    '150999974-0-36':
+        "Data set that contains information about the automatic recirculation setting in the vehicle's climate control system. 0 = off; 1 = on u",
+    '1526730784-0-8':
+        "Data set that contains information about the activation status of the driver's seat entry and exit assistance feature. 0 = off; 1 = on",
+    '16778242-1-37':
+        'Data set that contains information about the duration of the "Coming Home" lighting feature. Illumination duration u',
+    '16778243-1-36':
+        'Data set that contains information about the status of the "Coming Home" feature, indicating whether it is activated or deactivated. 0 = off; 1 = on u',
+    '16778244-1-37':
+        'Data set that contains information about the duration of the "Leaving Home" lighting feature. Illumination duration u',
+    '16778245-1-36':
+        'Data set that contains information about the activation status of the "Leaving Home" feature. 0 = off; 1 = on u',
+    '16778247-1-36':
+        'Data set that provides information about the activation status of the dynamic cornering light system. 0 = off; 1 = on u',
+    '16778250-1-36':
+        'Data set that contains information about the activation status of the Dynamic Light Assist feature, specifically for Audi Matrix-Beam headlights. 0 = off; 1 = on u',
+    '16778254-1-41':
+        'Data set that contains information about the activation status of automatic windshield wiping when rain is detected. bit field: 0 = automatic wiping off; 1 = automatic wiping on when rain is detected u',
+    '16778257-1-43':
+        'Data set that contains information about the sensitivity settings of the light sensor, indicating the activation time based on predefined sensitivity levels. 0=sensitive; 1=normal; 2=intensitive u',
+    '16778259-1-36':
+        'Data set that contains information about the exterior ambient lighting status related to the keyless entry system. 0 = off; 1 = on u',
+    '16778260-1-36':
+        'Data set that contains information about the activation status of an additional exterior ambient light. 0 = off; 1 = on u',
+    '16778261-1-44':
+        'Data set that allows configuration of the number of blinking cycles for a specific vehicle function. 2=2 times blinking; 3=3 times blinking; 4=4 times blinking; 5=5 times blinking u',
+    '16778263-1-45':
+        'Data set that contains information about the status of the ComingHome feature, indicating whether it is set to a classic mode or a staged mode. 0 = classic ComingHome; 1 = staged ComingHome u',
+    '16778264-1-46':
+        'Data set that provides information about the status of the "LeavingHome" functionality, indicating whether it is in a classic mode or a staged mode. 0 = classic LeavingHome; 1 = staged LeavingHome u',
+    '184555379-0-65':
+        'Data set that contains information about the level of the steering wheel heating, indicating its intensity or whether it is turned off. Level 0 â\x80 ¦ 3 (0 = Off) u',
+    '251666280-0-82':
+        'Data set that contains information about the activation status of the Side Assist system, also referred to as Blind Spot Detection (BSD). On/Off u',
+    '285221676-0-82':
+        'Data set that contains information about the activation status of the Rear Cross Traffic Alert (RCTA) system. On/Off u',
+    '285221774-0-91':
+        'Volume Front Sound Emitter 1 = quiet, 9 = loud u',
+    '285221776-0-91':
+        'Data set that contains information about the volume level of the rear sound emitter. 1 = quiet, 9 = loud u',
+    '352341537-0-36':
+        'Data set that provides information about the activation status of vehicle-to-everything (V2X) communication. 0 = off; 1 = on u',
+    '83889081-1-36':
+        'Data set that contains information about the activation status of the passenger-side mirror tilt function when the vehicle is in reverse gear. 0 = off; 1 = on u',
+    '83889082-1-36':
+        'Data set that contains information about the synchronization setting for mirror adjustments. 0 = off; 1 = on u',
+    '83889083-1-36':
+        'Data set that contains information about the configuration setting for folding mirrors during parking. 0 = off; 1 = on u',
+    'UserID':
+        'Unique userID used for customer identification -',
+    'activeDomains':
+        'Last car readiness had active domains set to true of false Boolean',
+    'autoUnlockPlugWhenCharged':
+        'The value indicating if the charge plug is to be automatically unlocked (or not) once the charging is completed. string (enum)',
+    'batteryClimatizationConsumption':
+        'normalized value of energy consumption for battery climtization forÂ standardÂ mode (non-comfort-related) 1/h float32',
+    'batteryStatus.cruisingRange.engineType':
+        'The type of engine / power / fuel, based on energy source. string (enum)',
+    'batteryStatus.cruisingRange.range':
+        'The range of the corresponding engine. km',
+    'batteryStatus.cruisingRange.unitBeforeConversion':
+        'The cruising range unit reported by the vehicle.',
+    'batteryStatus.currentSOC_pct':
+        'The current SOC of HV- Battery between 0 and 100% SOC with a resolution of 1%. % integer (0-100)',
+    'budgetStartBatteryLevel':
+        'Pre ID.S3 available budget at start of 24hr period',
+    'budgetStartTime':
+        'Pre ID.S3 start time for 24hr measurement period seconds Timestamp',
+    'carCapturedTimeStamp.nanos':
+        'The nano seconds of the UTC',
+    'carCapturedTimeStamp.seconds':
+        'The seconds of the UTC',
+    'careMode':
+        'The value indicates if the Battery Charging Care Mode functionality is on or off. string (enum)',
+    'causedBy':
+        'The reason the report was sent by the vehicle. string (enum)',
+    'chargeModeSelection':
+        'The value indicating if the vehicle shall start charging immediately once preconditions are met or if the vehicle shall start charging whenever a timer is active. string (enum)',
+    'chargingStatus.actionState':
+        'The state describes if the vehicle is charging immediately without a certain goal, or based on a timer/profile. string (enum)',
+    'chargingStatus.chargeMode':
+        'The mode of an ongoing charging process. string (enum)',
+    'chargingStatus.chargePower_kW':
+        'The actual charge power to the HV battery in kW. kW number (-500 to 500)',
+    'chargingStatus.chargeType':
+        'The type of current the connected power supply provides and is used for charging. string (enum)',
+    'chargingStatus.chargingScenario':
+        'The scenario of why the vehicle is charging or waiting to charge. string (enum)',
+    'chargingStatus.currentChargeState':
+        'The State of Charging process. string (enum)',
+    'chargingStatus.profileChargeReason':
+        'The specific reason why the charging process is currently running when a profile is active. string (enum)',
+    'chargingStatus.updateReason':
+        'The reason for the report being sent from the vehicle. string (enum)',
+    'connectionTimestamp':
+        'Used for managing 24h budget cycle in Pre ME3 vehicles seconds Timestamp',
+    'cruise_range_primary_info.unit':
+        'Information regarding the cruise range primary of the vehicle with subcategory unit Enum',
+    'cruise_range_primary_info.value':
+        'Information regarding the cruise range primary of the vehicle with subcategory value',
+    'door_info.front_left.door_lock_status.value':
+        'Information regarding the door of the vehicle with subcategory front left with subcategory door lock status with subcategory value Enum',
+    'door_info.front_left.door_status.value':
+        'Information regarding the door of the vehicle with subcategory front left with subcategory door status with subcategory value Enum',
+    'door_info.front_right.door_lock_status.value':
+        'Information regarding the door of the vehicle with subcategory front right with subcategory door lock status with subcategory value Enum',
+    'door_info.front_right.door_status.value':
+        'Information regarding the door of the vehicle with subcategory front right with subcategory door status with subcategory value Enum',
+    'door_info.rear_left.door_lock_status.value':
+        'Information regarding the door of the vehicle with subcategory rear left with subcategory door lock status with subcategory value Enum',
+    'door_info.rear_left.door_status.value':
+        'Information regarding the door of the vehicle with subcategory rear left with subcategory door status with subcategory value Enum',
+    'door_info.rear_right.door_lock_status.value':
+        'Information regarding the door of the vehicle with subcategory rear right with subcategory door lock status with subcategory value Enum',
+    'door_info.rear_right.door_status.value':
+        'Information regarding the door of the vehicle with subcategory rear right with subcategory door status with subcategory value Enum',
+    'envelope.[*].context.backendCapturedTimestamp.nanos':
+        'Fractions of a second at nanosecond resolution, complementing the seconds field. nano seconds',
+    'envelope.[*].context.backendCapturedTimestamp.seconds':
+        'Specifies the seconds, of UTC time since Unix epoch 1970-01- 01T00:00:00Z, at which this report was saved in the backend. seconds',
+    'envelope.[*].context.carCapturedTimeStamp.nanos':
+        'Fractions of a second at nanosecond resolution, complementing the seconds field. nano seconds',
+    'envelope.[*].context.carCapturedTimeStamp.seconds':
+        'Indicates the seconds, of UTC time since Unix epoch 1970-01- 01T00:00:00Z, at which the vehicle sent this report to the backend. seconds',
+    'envelope.[*].context.causedBy':
+        'If the report contains an error then this field describes what cause the error, for instance EDIT_CLIMA_TIMERS.',
+    'envelope.[*].context.errorContext.errorType':
+        'Provides information about the error type.',
+    'envelope.[*].context.messageId':
+        'A generated string that uniquely identifies the vehicle message.',
+    'envelope.[*].context.payloadType':
+        'Specified the type of the report, which this context is part of, for instance CLIMA_SETTINGS_REPOR T.',
+    'envelope.[*].context.trackingIdentifier':
+        'String to be used for tracking purposes.',
+    'envelope.[*].report.backendError.errorDescription':
+        'A description describing the error state of the backend.',
+    'envelope.[*].report.backendError.errorNumber':
+        'A number that represents a error code in the backend.',
+    'envelope.[*].report.climatizationElementSettings.isClimatizationAtUnlock':
+        'A settings value that describes if the climatization should start after opening the doors with the car key.',
+    'envelope.[*].report.climatizationElementSettings.zoneFrontLeftEnabled':
+        'A settings value that describes if front left zone (seat) should be acclimatized.',
+    'envelope.[*].report.climatizationElementSettings.zoneFrontRightEnabled':
+        'A settings value that describes if front right zone (seat) should be acclimatized.',
+    'envelope.[*].report.climatizationElementSettings.zoneRearLeftEnabled':
+        'A settings value that describes if rear left zone (seat) should be acclimatized.',
+    'envelope.[*].report.climatizationElementSettings.zoneRearRightEnabled':
+        'A settings value that describes if rear right zone (seat) should be acclimatized.',
+    'envelope.[*].report.climatizationMode':
+        'Describes climatization mode. If \\"UNDEFINED\\" then not applicable for that vehicle brand and or model.',
+    'envelope.[*].report.climatizationWithoutExternalPower':
+        'A settings value that determines if the infrastructure is inactive or available. If the battery is low (less than 20%), climatization will not be started.',
+    'envelope.[*].report.instrumentClusterTime':
+        'Describes the time with time zone as set by the user inside the car. date-time string (date-time)',
+    'envelope.[*].report.messageId':
+        'A value that is used to identify a message.',
+    'envelope.[*].report.remainingClimatizationTime_min.nanos':
+        'Fractions of a second at nanosecond resolution, complementing the seconds field. nano seconds',
+    'envelope.[*].report.remainingClimatizationTime_min.seconds':
+        'Describes how long time (in seconds) it is left until the climatization has (approximately) reached the climatization goal. seconds',
+    'envelope.[*].report.status':
+        'Describes what the vehicle is doing to reach the wanted temperature, e.g. cooling, heating or ventilating.',
+    'envelope.[*].report.targetTemperature.temperature':
+        'A settings value that describes what temperature the vehicle shall reach while climatization is active. integer (0-100)',
+    'envelope.[*].report.targetTemperature.unit':
+        'The temperature unit used, can be either celsius or fahrenheit.',
+    'envelope.[*].report.timers.id':
+        'A number that is used to identify the different timers.',
+    'envelope.[*].report.timers.isEnabled':
+        'A value that describes if the timer is enabled or not.',
+    'envelope.[*].report.trigger':
+        'Describes why the climatization has started, e.g. climatization timer, charging profile timer or immediately by user.',
+    'envelope.[*].report.windowHeatingState':
+        'Describes the window heating status, e.g. invalid, off or on.',
+    'hasWarnedDailyPowerBudget':
+        'Pre ID.S3 indicates daily energy budget is almost used up Boolean',
+    'hasWarnedPowerLevel':
+        'Indicates energy budget is almost used up Boolean',
+    'home_storage_charging':
+        'The option to start bi- directional DC charging where the vehicle offers to either provide energy to the home storage or store energy surplus is currently available.',
+    'hood_info.hood_lock_status.value':
+        'Information regarding the hood of the vehicle with subcategory hood lock status with subcategory value Enum',
+    'hood_info.hood_status.value':
+        'Information regarding the hood of the vehicle with subcategory hood status with subcategory value Enum',
+    'hvbatterytemperature_info.max_temperature.unit':
+        'Information regarding the hvbatterytemperature of the vehicle with subcategory max temperature with subcategory unit Enum',
+    'hvbatterytemperature_info.max_temperature.value':
+        'Information regarding the hvbatterytemperature of the vehicle with subcategory max temperature with subcategory value',
+    'hvbatterytemperature_info.min_temperature.unit':
+        'Information regarding the hvbatterytemperature of the vehicle with subcategory min temperature with subcategory unit Enum',
+    'hvbatterytemperature_info.min_temperature.value':
+        'Information regarding the hvbatterytemperature of the vehicle with subcategory min temperature with subcategory value',
+    'hvsoc_info.value':
+        'Information regarding the hvsoc of the vehicle with subcategory value %',
+    'immediate_charging':
+        'The option to start charging immediately is currently available.',
+    'immediate_discharging':
+        'The option to start bi- directional DC charging to discharge the vehicle to provide power to the home storage is currently available.',
+    'instrumentClusterTime':
+        'The time that is adjusted inside the vehicle. h string (date-time)',
+    'interiorClimatizationConsumption':
+        'value of interior climatization consumption 1/h float32',
+    'isConnected':
+        'vehicle is considered connected Boolean',
+    'maxChargingCurrent':
+        'The value indicating if the vehicle shall use max or a reduced amount of current while charging. A string (enum)',
+    'mileage_info.unit':
+        'Information regarding the mileage of the vehicle with subcategory unit Enum',
+    'mileage_info.value':
+        'Information regarding the mileage of the vehicle with subcategory value',
+    'only_own_current':
+        'The option to start charging with Home Energy Management System (HEMS) is currently available.',
+    'osShutdown':
+        'Communications unit is shutting down Boolean',
+    'outdoortemperature_info.unit':
+        'Information regarding the outdoortemperature of the vehicle with subcategory unit Enum',
+    'outdoortemperature_info.value':
+        'Information regarding the outdoortemperature of the vehicle with subcategory value',
+    'parking_brake_info.value':
+        'Information regarding the parking brake of the vehicle with subcategory value',
+    'parking_lights_info.left_status.value':
+        'Information regarding the parking lights of the vehicle with subcategory left status with subcategory value Enum',
+    'parking_lights_info.right_status.value':
+        'Information regarding the parking lights of the vehicle with subcategory right status with subcategory value Enum',
+    'payloadType':
+        'The type of report sent by the vehicle. string (enum)',
+    'plugStatusItem.chargingPlugType':
+        'The type of plug. string (enum)',
+    'plugStatusItem.flapLockState':
+        'The flap lock state.',
+    'plugStatusItem.flap_open_state':
+        'The flap open state. string (enum)',
+    'plugStatusItem.infrastructureState':
+        'The current state of infrastructure. string (enum)',
+    'plugStatusItem.plugConnectionState':
+        'The current plug connection state. string (enum)',
+    'plugStatusItem.plugLockState':
+        'The current lock state of the plug. string (enum)',
+    'plugStatusItem.plugPosition':
+        'The position of the plug. string (enum)',
+    'preferred_charging_times':
+        'The option to start charging using preferred charging times is currently available.',
+    'resetUseHV':
+        'Indicates a factory reset has occurred and the useHV option should be reset when the vehicle is back online Boolean',
+    'residualConsumption':
+        'value of energy consumption of residual car network components 1/h float32',
+    'service_maintenance_info.due_in_time.value':
+        'Information regarding the service maintenance of the vehicle with subcategory due in time with subcategory value',
+    'service_maintenance_info.service_type':
+        'Information regarding the service maintenance of the vehicle with subcategory service type',
+    'state.notification':
+        'The current battery charging care mode notification state. string (enum)',
+    'state.threshold':
+        'The maximum charge limit of SOC enforced while battery care mode is active. % SOC',
+    'targetSoc_pct':
+        'The maximum charge level the battery should be charged as specified by the user. The allowed range is between 25% and 100%. %',
+    'timer_charging':
+        'The option to start charging with a timer is currently available.',
+    'timer_charging_climatization':
+        'The option to start charging and start climatization with a timer is currently available.',
+    'trunk_lid_info.trunk_lid_lock_status.value':
+        'Information regarding the trunk lid of the vehicle with subcategory trunk lid lock status with subcategory value Enum',
+    'trunk_lid_info.trunk_lid_status.value':
+        'Information regarding the trunk lid of the vehicle with subcategory trunk lid status with subcategory value Enum',
+    'unlock_all':
+        'Remote Unlock All Doors',
+    'useHVMessageId':
+        'used for managing acknowledgement ofÂ HVÂ setting Sring',
+    'vehicleError.errorDescription':
+        'The description of the error code from the car.',
+    'vehicleError.errorNumber':
+        'The number that represents the error code from the car.',
+    'vehicleIdentifier':
+        'The unique identifier of the vehicle used in the Device Platform backend.',
+    'vehiclePlatform':
+        'The type of vehicle platform. string (enum)',
+    'window_info.front_left.window_percentage_open.value':
+        'Information regarding the window of the vehicle with subcategory front left with subcategory window percentage open with subcategory value %',
+    'window_info.front_left.window_status.value':
+        'Information regarding the window of the vehicle with subcategory front left with subcategory window status with subcategory value Enum',
+    'window_info.front_right.window_percentage_open.value':
+        'Information regarding the window of the vehicle with subcategory front right with subcategory window percentage open with subcategory value %',
+    'window_info.front_right.window_status.value':
+        'Information regarding the window of the vehicle with subcategory front right with subcategory window status with subcategory value Enum',
+    'window_info.rear_left.window_percentage_open.value':
+        'Information regarding the window of the vehicle with subcategory rear left with subcategory window percentage open with subcategory value %',
+    'window_info.rear_left.window_status.value':
+        'Information regarding the window of the vehicle with subcategory rear left with subcategory window status with subcategory value Enum',
+    'window_info.rear_right.window_percentage_open.value':
+        'Information regarding the window of the vehicle with subcategory rear right with subcategory window percentage open with subcategory value %',
+    'window_info.rear_right.window_status.value':
+        'Information regarding the window of the vehicle with subcategory rear right with subcategory window status with subcategory value Enum',
+}
+
+
 def parse_ts(s):
     """Both '2026-05-15 07:23:51' and '2026-06-29T11:21:22.432Z' occur."""
     if not s or s == "N/A":
@@ -977,6 +1404,17 @@ def build(export_paths, pdf_path, out_path, price_kwh=None, currency="€", csv_
         pdfs = glob.glob(os.path.join(os.path.dirname(os.path.abspath(export_path)), "*.pdf"))
         pdf_path = pdfs[0] if pdfs else None
     descs, dictionary_info = extract_pdf_descriptions(pdf_path, key_to_field)
+    if not dictionary_info.get("keys"):
+        # no PDF supplied — the bundled dictionary facts keep the audit working
+        dictionary_info = dict(BUNDLED_DICTIONARY_INFO)
+        print("using bundled Data Dictionary V4.0 descriptions "
+              "(drop the portal's dictionary PDF next to the export to use a newer one)")
+
+    def field_description(f):
+        d = descs.get(field_key[f], "")
+        if not d:
+            d = BUNDLED_FIELD_DESCRIPTIONS.get(re.sub(r"\.\[\d+\]\.", ".[*].", f), "")
+        return d
 
     inventory = []
     for f, n in counts.most_common():
@@ -985,7 +1423,7 @@ def build(export_paths, pdf_path, out_path, price_kwh=None, currency="€", csv_
             d = label + (f" [{unit}]" if unit else "")
             d += " — inferred, not in Data Act dictionary" + (f"; {note}" if note else "")
         else:
-            d = descs.get(field_key[f], "")
+            d = field_description(f)
         fl = first_last.get(f)
         inventory.append({
             "field": f, "n": n, "desc": d[:220], "sample": sample[f],
@@ -1111,7 +1549,8 @@ def build(export_paths, pdf_path, out_path, price_kwh=None, currency="€", csv_
         os.path.basename(export_path)))
     completeness = {
         "dictionaryKeys": dictionary_info.get("keys"), "exportKeys": len(export_keys),
-        "matchedKeys": len(descs), "exportFields": len(export_fields),
+        "matchedKeys": sum(1 for f in field_key if field_description(f)),
+        "exportFields": len(export_fields),
         "numericFields": len(numeric_fields), "numericRecords": numeric_records,
         "numericPct": round(numeric_records / len(recs) * 100, 3),
         "rawMin": min(record_times) if record_times else None,

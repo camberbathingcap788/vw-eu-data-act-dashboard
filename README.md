@@ -60,19 +60,19 @@ segments bridge periods where the car wasn't reporting.
    whether you got a real one.
 6. Unzip the package. Inside you should find one or more `.json` files named
    after your VIN (e.g. `WVWZZZ...123_20260720080125.json`).
-7. Also grab the **Data Dictionary PDF** offered on the portal (a file like
-   `..._DataDictionary_..._Historical Data.pdf`) — the script uses it to attach
-   human-readable descriptions to the fields in your export.
+7. *(Optional)* The portal also offers a **Data Dictionary PDF** (a file like
+   `..._DataDictionary_..._Historical Data.pdf`). You **don't need it** — the
+   script bundles the descriptions from dictionary V4.0 (Sept 2025). Grab it
+   only if VW has published a newer version; placed next to your export it
+   takes precedence over the bundled data.
 
 ## Usage
 
-Requires Python 3.9+ and **nothing else** — no packages to install. The Data
-Dictionary PDF is parsed with a built-in reader. (If `pypdf` happens to be
-installed it is used instead for slightly more thorough parsing, but it is not
-needed.)
+Requires Python 3.9+ and **nothing else** — no packages to install, and the
+only input file you need is the export JSON (field descriptions from VW's
+Data Dictionary are bundled into the script).
 
-Put your export JSON (and optionally the dictionary PDF) next to the script,
-then:
+Put your export JSON next to the script, then:
 
 ```bash
 python3 build_dashboard.py
@@ -85,7 +85,7 @@ charging sessions (falling back to sensible defaults when it can't). Everything
 it decided is printed as it runs. To be explicit instead:
 
 ```bash
-python3 build_dashboard.py export.json --pdf dictionary.pdf -o dashboard.html
+python3 build_dashboard.py export.json -o dashboard.html
 ```
 
 ### Options
@@ -94,7 +94,7 @@ python3 build_dashboard.py export.json --pdf dictionary.pdf -o dashboard.html
 |---|---|
 | `exports...` | one **or more** export JSONs — multiple files are merged and deduplicated |
 | `-o / --out` | output HTML path (default `dashboard.html` next to the export) |
-| `--pdf` | Data Dictionary PDF (default: any `.pdf` next to the export) |
+| `--pdf` | Data Dictionary PDF — optional; bundled V4.0 descriptions are used when absent |
 | `--csv` | also write cleaned per-series CSV files (SoC, odometer, speed, charges, trips…) |
 | `--price-kwh 0.21` | electricity price — adds cost estimates to the charging ledger |
 | `--currency €` | currency symbol for `--price-kwh` |
