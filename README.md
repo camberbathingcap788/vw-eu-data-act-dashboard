@@ -66,11 +66,10 @@ segments bridge periods where the car wasn't reporting.
 
 ## Usage
 
-Requires Python 3.9+. `pypdf` is optional (only for the Data Dictionary join):
-
-```bash
-pip install pypdf   # optional but recommended
-```
+Requires Python 3.9+ and **nothing else** — no packages to install. The Data
+Dictionary PDF is parsed with a built-in reader. (If `pypdf` happens to be
+installed it is used instead for slightly more thorough parsing, but it is not
+needed.)
 
 Put your export JSON (and optionally the dictionary PDF) next to the script,
 then:

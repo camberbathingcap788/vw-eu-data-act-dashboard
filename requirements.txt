@@ -1,2 +1,0 @@
-# Optional — only needed to join field descriptions from VW's Data Dictionary PDF
-pypdf>=4.0
