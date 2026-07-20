@@ -59,6 +59,16 @@ VIN_MODELS = {
     "ED": ("Volkswagen ID.7", [77, 86]),
     "EB": ("Volkswagen ID. Buzz", [77, 86]),
 }
+# The portal serves all participating VW Group brands; recognise them from the
+# VIN's world manufacturer identifier so the dashboard is titled sensibly even
+# where the per-model code table above doesn't apply.
+VIN_BRANDS = {
+    "WVW": "Volkswagen", "WVG": "Volkswagen",
+    "WV1": "Volkswagen Commercial Vehicles", "WV2": "Volkswagen Commercial Vehicles",
+    "WV3": "Volkswagen Commercial Vehicles",
+    "WAU": "Audi", "WA1": "Audi", "WUA": "Audi",
+    "TMB": "Škoda", "VSS": "SEAT / Cupra", "SCB": "Bentley",
+}
 # fallback across the MEB family when the model is unknown
 KNOWN_USABLE_KWH = [45, 52, 58, 77, 79, 86]
 
@@ -68,7 +78,11 @@ def detect_vehicle_title(vin):
         entry = VIN_MODELS.get(vin[6:8].upper())
         if entry:
             return entry[0]
-    return "Volkswagen EV"
+    if vin and len(vin) >= 3:
+        brand = VIN_BRANDS.get(vin[:3].upper())
+        if brand:
+            return brand
+    return "Volkswagen Group EV"
 
 
 def pack_options_for_vin(vin):

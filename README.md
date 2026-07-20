@@ -10,11 +10,19 @@ One Python script, no server, no accounts, no telemetry. The output is a single
 **battery health verdict** with a *measured* usable capacity, which makes this
 tool especially useful when **buying a used VW EV** (see below).
 
-Supports the VW MEB family — **ID.3, ID.4, ID.5, ID.7, ID. Buzz** — with the
-model and its possible battery pack sizes detected from the VIN. Built and
-reverse-engineered against an ID.7 export; the high-frequency diagnostic
-channels were validated on that car, so treat other models' inferred channels
-with a little extra skepticism (the documented fields work regardless).
+The portal serves the **participating Volkswagen Group brands** — Volkswagen
+Passenger Cars, Volkswagen Commercial Vehicles, Audi, Škoda, SEAT, Cupra and
+Bentley — and this tool reads their common export format. Best supported is
+the **MEB EV family**: VW ID.3/ID.4/ID.5/ID.7/ID. Buzz, and their platform
+siblings **Cupra Born/Tavascan, Škoda Enyaq/Elroq, Audi Q4 e-tron** (same
+platform, same 96-series battery packs, so the battery analysis applies).
+Model and pack sizes are detected from the VIN. Built and reverse-engineered
+against a VW ID.7 export; the high-frequency diagnostic channels were
+validated on that car, so treat other models' inferred channels with a little
+extra skepticism — and please open an issue with your results on other Group
+cars. Non-MEB vehicles (e.g. Audi's PPE models, combustion cars) will still
+get the documented fields and the package audit, but the battery inferences
+won't apply.
 
 ![Overview tab — vehicle snapshot, battery health verdict and headline figures](docs/overview.jpg)
 
@@ -44,12 +52,13 @@ Every value is labelled **observed** (directly in the export), **derived**
 meaning was reverse-engineered). Solid line segments are measured; dashed
 segments bridge periods where the car wasn't reporting.
 
-## Getting your data from Volkswagen
+## Getting your data from the Volkswagen Group portal
 
-1. Go to Volkswagen's EU Data Act portal:
+1. Go to the Volkswagen Group's EU Data Act portal:
    **<https://eu-data-act.drivesomethinggreater.com/de/en>**
-2. Sign in with (or create) your Volkswagen ID. The vehicle must be linked to
-   your account as owner/primary user.
+2. **Select your vehicle's brand** (Volkswagen, Audi, Škoda, SEAT, Cupra,
+   Bentley, VW Commercial Vehicles) and sign in with that brand's ID account.
+   The vehicle must be linked to your account as owner/primary user.
 3. Request the **historical data** package for your vehicle.
 4. Wait for the notification that the package is ready (this can take a while),
    then download it. **The download link expires after ~7 days**, so don't sit
@@ -116,13 +125,13 @@ Request a fresh export every ~6 weeks, keep the JSONs, and your dashboard grows
 a history deeper than any single package VW will ever give you — seasonal
 consumption, battery-health trends, the lot.
 
-## Buying a used ID.3 / ID.4 / ID.5 / ID.7 / ID. Buzz?
+## Buying a used MEB EV? (ID.3/4/5/7, Buzz, Born, Enyaq, Q4 e-tron…)
 
 This might be the tool's best use. The battery is the single most expensive
 component of a used EV, and dealers rarely show you a real state-of-health
 figure. But **the seller can get the data for free**: under the EU Data Act,
-any owner can request their vehicle's data export from VW's portal (see
-"Getting your data" above). So:
+any owner can request their vehicle's data export from the Group's portal
+(see "Getting your data" above). So:
 
 1. Ask the seller to request the historical data package for the car and send
    you the JSON — it costs them nothing but a few clicks and a few days' wait.
