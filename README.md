@@ -16,6 +16,10 @@ reverse-engineered against an ID.7 export; the high-frequency diagnostic
 channels were validated on that car, so treat other models' inferred channels
 with a little extra skepticism (the documented fields work regardless).
 
+![Overview tab — vehicle snapshot, battery health verdict and headline figures](docs/overview.jpg)
+
+![Battery tab — health card with measured capacity, SoC history, cell voltages and imbalance](docs/battery.jpg)
+
 ## What you get
 
 - **Overview** — current vehicle snapshot (SoC, range, doors, service due) and
