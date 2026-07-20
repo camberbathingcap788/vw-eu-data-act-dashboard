@@ -7,15 +7,15 @@ vehicle and download the zip when notified — the link expires after a few days
 See README.md for the full walkthrough.
 
 Usage:
-    python3 build_dashboard.py [export.json ...] [-o dashboard.html] [--pdf dictionary.pdf]
+    python3 build_dashboard.py [export.json ...] [-o dashboard.html]
 
 Reads the vehicle data export (a flat list of {key, dataFieldName, value,
 timestampUtc} records), cleans known sensor error values, aggregates the
 high-frequency diagnostic channels into chart-ready series and writes a single
 self-contained dashboard.html (no network access needed to view it).
 
-If the Data Act "Data Dictionary" PDF is given (or found next to the export)
-and pypdf is installed, field descriptions are joined into the data inventory.
+Field descriptions from VW's Data Dictionary are bundled into the script —
+the export JSON is the only input needed.
 """
 
 import argparse
@@ -195,7 +195,7 @@ THERMAL_CHANNELS = {
     "546445": "Sensor G",
 }
 
-# Diagnostic measurement channels are not part of the Data Act dictionary PDF;
+# Diagnostic measurement channels are not documented in VW's Data Dictionary;
 # these labels are inferred from units, value ranges and cross-checks against
 # the snapshot fields (odometer/SoC match mileage_info/hvsoc_info exactly).
 DIAG_LABELS = {
@@ -231,9 +231,9 @@ THERMAL_MODE_LABELS = {
 
 # ---------------------------------------------------------------------------
 # Bundled Data Dictionary content — extracted once from VW's
-# "251022_01_SVK_DataDictionary_V4.0 - Historical Data" PDF (11.09.2025), so
-# no PDF is needed at runtime. If a dictionary PDF sits next to the export it
-# is parsed and takes precedence (useful when VW publishes a newer version).
+# "251022_01_SVK_DataDictionary_V4.0 - Historical Data" document (11.09.2025).
+# The dictionary changes rarely; if VW publishes a new version, regenerate
+# this block (see the repository notes) rather than parsing at runtime.
 BUNDLED_DICTIONARY_INFO = {
     "keys": 5140,
     "uuidOccurrences": 5150,
@@ -811,95 +811,6 @@ def decode_config_value(value, description):
     return value
 
 
-def extract_pdf_text_builtin(pdf_path):
-    """Extract text from a PDF with the standard library only.
-
-    Not a general PDF parser: it inflates every FlateDecode content stream
-    (zlib is stdlib) and collects the show-text operators in order, which is
-    enough for the generated-table layout of VW's Data Dictionary. Recovers
-    ~99% of the dictionary keys that pypdf does, with zero dependencies.
-    """
-    import zlib
-    raw = open(pdf_path, "rb").read()
-    texts = []
-    for m in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", raw, re.S):
-        try:
-            data = zlib.decompress(m.group(1))
-        except zlib.error:
-            continue
-        if b"Tj" not in data and b"TJ" not in data:
-            continue
-        out = []
-        for tm in re.finditer(rb"\((?:\\.|[^\\()])*\)|T\*|Td|TD", data):
-            tok = tm.group(0)
-            if tok in (b"T*", b"Td", b"TD"):
-                out.append(b"\n")
-            else:
-                s = tok[1:-1]
-                s = re.sub(rb"\\([0-7]{1,3})", lambda x: bytes([int(x.group(1), 8)]), s)
-                s = s.replace(b"\\(", b"(").replace(b"\\)", b")").replace(b"\\\\", b"\\")
-                out.append(s)
-        texts.append(b"".join(out))
-    return b"\n".join(texts).decode("latin-1", "replace")
-
-
-def extract_pdf_descriptions(pdf_path, field_keys):
-    """Join the Data Dictionary PDF: record key (uuid) -> description text."""
-    if not pdf_path or not os.path.exists(pdf_path):
-        return {}, {"keys": None, "terms": {}}
-    print(f"reading data dictionary: {os.path.basename(pdf_path)} ...")
-    try:
-        # pypdf, when present, handles exotic PDFs a little better —
-        # but it is strictly optional, the built-in extractor is the default
-        from pypdf import PdfReader
-        text = "\n".join(p.extract_text() or "" for p in PdfReader(pdf_path).pages)
-    except ImportError:
-        text = extract_pdf_text_builtin(pdf_path)
-    uuid_re = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-    matches = list(uuid_re.finditer(text))
-    blocks = {}
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        blocks.setdefault(m.group(0), text[m.end():end])
-    descs = {}
-    for key, field_name in field_keys.items():
-        block = blocks.get(key)
-        if not block:
-            continue
-        clean = " ".join(block.split())
-        # The block starts with the data point name (possibly line-wrapped, so
-        # spaces may be interleaved); consume it, the rest is the description.
-        name = re.sub(r"\.\[\d+\]\.", ".[*].", field_name)
-        i = 0
-        for ch in name:
-            while i < len(clean) and clean[i] == " " and ch != " ":
-                i += 1
-            if i < len(clean) and clean[i] == ch:
-                i += 1
-            else:
-                i = 0
-                break
-        desc = clean[i:].strip() if i else clean
-        desc = re.sub(
-            r"\s*(integer|bigint|int|string|String|boolean|bool|float|double|"
-            r"unsignedInt|numeric|timestamp.*|character varying\(\d+\))$",
-            "", desc)
-        descs[key] = desc.strip()
-    print(f"  matched descriptions for {len(descs)} of {len(field_keys)} record keys")
-    expected_terms = [
-        "warninglightdata.messageId", "warninglightdata.priority",
-        "warninglightdata.serviceLead", "payloadDecoded_warnings_id",
-        "payloadDecoded_warnings_fields", "ilfdia.status",
-    ]
-    compact = re.sub(r"\s+", "", text).lower()
-    info = {
-        "keys": len({m.group(0).lower() for m in matches}),
-        "uuidOccurrences": len(matches),
-        "terms": {term: term.lower() in compact for term in expected_terms},
-    }
-    return descs, info
-
-
 def detect_sessions(activity_ts, odo, soc, speed, gap_s=45 * 60):
     """Cluster activity timestamps into sessions; classify drive vs charge."""
     def within(pts, a, b):
@@ -1047,7 +958,7 @@ def detect_trips(odo, soc, speed, current, sample_gap_s=TRIP_SAMPLE_GAP_S):
     return trips, movement_gaps, round(sum(e[2] for e in edges), 1)
 
 
-def build(export_paths, pdf_path, out_path, price_kwh=None, currency="€", csv_dir=None,
+def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
           include_identifiers=False, vehicle_title=None, pack_kwh=None, utc_offset=None):
     # Merge any number of exports (VW purges history, so feeding every export
     # you ever request builds an archive deeper than any single package).
@@ -1400,21 +1311,10 @@ def build(export_paths, pdf_path, out_path, price_kwh=None, currency="€", csv_
             a, b = first_last.get(f, (t, t))
             first_last[f] = (min(a, t), max(b, t))
 
-    if not pdf_path:
-        pdfs = glob.glob(os.path.join(os.path.dirname(os.path.abspath(export_path)), "*.pdf"))
-        pdf_path = pdfs[0] if pdfs else None
-    descs, dictionary_info = extract_pdf_descriptions(pdf_path, key_to_field)
-    if not dictionary_info.get("keys"):
-        # no PDF supplied — the bundled dictionary facts keep the audit working
-        dictionary_info = dict(BUNDLED_DICTIONARY_INFO)
-        print("using bundled Data Dictionary V4.0 descriptions "
-              "(drop the portal's dictionary PDF next to the export to use a newer one)")
+    dictionary_info = dict(BUNDLED_DICTIONARY_INFO)
 
     def field_description(f):
-        d = descs.get(field_key[f], "")
-        if not d:
-            d = BUNDLED_FIELD_DESCRIPTIONS.get(re.sub(r"\.\[\d+\]\.", ".[*].", f), "")
-        return d
+        return BUNDLED_FIELD_DESCRIPTIONS.get(re.sub(r"\.\[\d+\]\.", ".[*].", f), "")
 
     inventory = []
     for f, n in counts.most_common():
@@ -2877,7 +2777,7 @@ function renderEvidence(){
 
   const miss = el("div","card"), mh = el("header"), mg = el("div","grow");
   mg.appendChild(el("h2",null,"Dictionary fields cited but not delivered"));
-  mg.appendChild(el("div","sub","Presence is checked independently in the dictionary PDF and in the JSON export"));
+  mg.appendChild(el("div","sub","Checked against VW's Data Dictionary V4.0 (bundled) and the JSON export"));
   mh.appendChild(mg); mh.appendChild(prov("derived")); miss.appendChild(mh);
   const mw = el("div","tableWrap"); mw.appendChild(buildTable(
     ["Field","In dictionary","In export"],C.expectedFields.map(f =>
@@ -2999,7 +2899,6 @@ def main():
                     help="export .json file(s) — several are merged into one archive "
                          "(default: all WV*.json next to this script)")
     ap.add_argument("-o", "--out", default=None, help="output HTML path (default: dashboard.html next to export)")
-    ap.add_argument("--pdf", default=None, help="Data Dictionary PDF (default: any .pdf next to export)")
     ap.add_argument("--price-kwh", type=float, default=None,
                     help="electricity price per kWh — adds cost estimates to charging data")
     ap.add_argument("--currency", default="€", help="currency symbol for --price-kwh (default €)")
@@ -3024,7 +2923,7 @@ def main():
             sys.exit("no export .json found — pass its path as the first argument")
     out = args.out or os.path.join(os.path.dirname(os.path.abspath(paths[0])), "dashboard.html")
     csv_dir = os.path.splitext(out)[0] + "_csv" if args.csv else None
-    build(paths, args.pdf, out, price_kwh=args.price_kwh, currency=args.currency,
+    build(paths, out, price_kwh=args.price_kwh, currency=args.currency,
           csv_dir=csv_dir, include_identifiers=args.include_identifiers,
           vehicle_title=args.vehicle_title, pack_kwh=args.pack_kwh,
           utc_offset=args.utc_offset)

@@ -59,12 +59,9 @@ segments bridge periods where the car wasn't reporting.
    script prints the record count when it runs, so you'll see immediately
    whether you got a real one.
 6. Unzip the package. Inside you should find one or more `.json` files named
-   after your VIN (e.g. `WVWZZZ...123_20260720080125.json`).
-7. *(Optional)* The portal also offers a **Data Dictionary PDF** (a file like
-   `..._DataDictionary_..._Historical Data.pdf`). You **don't need it** — the
-   script bundles the descriptions from dictionary V4.0 (Sept 2025). Grab it
-   only if VW has published a newer version; placed next to your export it
-   takes precedence over the bundled data.
+   after your VIN (e.g. `WVWZZZ...123_20260720080125.json`). That JSON is the
+   only file this tool needs — everything else (including the field
+   descriptions from VW's Data Dictionary) is built into the script.
 
 ## Usage
 
@@ -94,7 +91,6 @@ python3 build_dashboard.py export.json -o dashboard.html
 |---|---|
 | `exports...` | one **or more** export JSONs — multiple files are merged and deduplicated |
 | `-o / --out` | output HTML path (default `dashboard.html` next to the export) |
-| `--pdf` | Data Dictionary PDF — optional; bundled V4.0 descriptions are used when absent |
 | `--csv` | also write cleaned per-series CSV files (SoC, odometer, speed, charges, trips…) |
 | `--price-kwh 0.21` | electricity price — adds cost estimates to the charging ledger |
 | `--currency €` | currency symbol for `--price-kwh` |
@@ -203,7 +199,7 @@ to push back through the portal's contact form.
 - The VIN and backend/user identifiers are **redacted by default** in the HTML
   (`--include-identifiers` to keep them).
 - `dashboard.html` still contains your driving history — share it deliberately.
-- The included `.gitignore` keeps exports, PDFs and generated dashboards out of
+- The included `.gitignore` keeps exports and generated dashboards out of
   version control. **Never commit your export.**
 
 ## License
