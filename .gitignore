@@ -1,0 +1,14 @@
+# Personal vehicle data — NEVER commit these
+*.json
+*.pdf
+dashboard.html
+dashboard_csv/
+data_access_complaint.txt
+
+# OS / editor / tooling
+.DS_Store
+.claude/
+__pycache__/
+*.pyc
+venv/
+.venv/
