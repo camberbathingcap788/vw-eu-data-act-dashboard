@@ -6463,6 +6463,21 @@ table.dv td.num, table.dv th.num { text-align:right; }
 .scroll { overflow-x:auto; }
 .tableWrap { max-height:340px; overflow:auto; }
 table.dv td:first-child { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11.5px; }
+table.dv.configTable { table-layout:fixed; min-width:1040px; }
+table.dv.configTable th:nth-child(1) { width:148px; }
+table.dv.configTable th:nth-child(2) { width:168px; }
+table.dv.configTable th:nth-child(3),
+table.dv.configTable th:nth-child(4) { width:210px; }
+table.dv.configTable th:nth-child(5) { width:82px; }
+table.dv.configTable td { vertical-align:top; }
+table.dv.configTable td:nth-child(2),
+table.dv.configTable td:nth-child(3),
+table.dv.configTable td:nth-child(4),
+table.dv.configTable td:nth-child(6) { overflow-wrap:anywhere; word-break:break-word; }
+table.dv.configTable td:nth-child(2),
+table.dv.configTable td:nth-child(4) {
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11.5px;
+}
 .tag { display:inline-block; padding:1px 7px; border-radius:999px; border:1px solid var(--border); font-size:11px; }
 .metricStrip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1px;
   background:var(--border); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-top:10px; }
@@ -7879,9 +7894,11 @@ function renderActivity(){
   cg.appendChild(el("div","sub",DATA.configuration.length + " settings found · " + explicit +
     " explicit values · raw encodings retained when the dictionary is ambiguous"));
   ch.appendChild(cg); ch.appendChild(prov("observed")); cfg.appendChild(ch);
-  const cw = el("div","tableWrap"); cw.appendChild(buildTable(
+  const configTable = buildTable(
     ["Time","Field","Interpreted value","Raw","Source","Dictionary description"],
-    DATA.configuration.map(c => [fmtFull(c.time),c.field,c.value,c.raw,c.source,c.description || "—"])));
+    DATA.configuration.map(c => [fmtFull(c.time),c.field,c.value,c.raw,c.source,c.description || "—"]));
+  configTable.classList.add("configTable");
+  const cw = el("div","tableWrap"); cw.appendChild(configTable);
   cfg.appendChild(cw);
   if (DATA.configuration.length) wrap.appendChild(cfg);
 }
