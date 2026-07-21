@@ -152,6 +152,10 @@ def estimate_pack_capacity(charge_runs, current, cell_max, cell_min):
         cap = e_wh / 1000 / frac / dsoc * 100
         if 20 <= cap <= 130:   # sanity band; outside = bad sign convention or data
             estimates.append({"start": a, "dsoc": round(dsoc),
+                              "socFrom": round(va), "socTo": round(vb),
+                              "hours": round((b - a) / 3600, 1),
+                              "coveragePct": round(frac * 100),
+                              "samples": len(win),
                               "kwhIn": round(e_wh / 1000 / frac, 1),
                               "capKwh": round(cap, 1)})
     return estimates
@@ -893,7 +897,7 @@ def detect_charge_runs(soc, gap_s=CHARGE_SAMPLE_GAP_S, min_gain=3):
     return charges
 
 
-def detect_trips(odo, soc, speed, current, sample_gap_s=TRIP_SAMPLE_GAP_S):
+def detect_trips(odo, soc, speed, current, ambient, sample_gap_s=TRIP_SAMPLE_GAP_S):
     """Build an evidence-led trip ledger from positive odometer edges.
 
     Edges separated by no more than 30 minutes are observed movement and are
@@ -939,6 +943,7 @@ def detect_trips(odo, soc, speed, current, sample_gap_s=TRIP_SAMPLE_GAP_S):
         pad = 5 * 60
         speeds = [v for t, v in speed if a - pad <= t <= b + pad]
         amps = [v for t, v in current if a - pad <= t <= b + pad]
+        ambs = [v for t, v in ambient if a - pad <= t <= b + pad]
         moving = [v for v in speeds if v > 1]
         dur_min = (b - a) / 60
         moving_min = round(dur_min * len(moving) / len(speeds)) if speeds else None
@@ -962,6 +967,7 @@ def detect_trips(odo, soc, speed, current, sample_gap_s=TRIP_SAMPLE_GAP_S):
             "consConf": cons_conf,
             "peakDischargeA": round(abs(min(amps)), 1) if amps and min(amps) < 0 else None,
             "peakRegenA": round(max(amps), 1) if amps and max(amps) > 0 else None,
+            "ambientC": round(sum(ambs) / len(ambs), 1) if ambs else None,
             "confidence": "observed",
         })
 
@@ -1106,7 +1112,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         "d": d.isoformat(), "km": round(daily_parts[d]["km"], 1),
         "gapKm": round(daily_parts[d]["gapKm"], 1),
     } for d in sorted(by_day)]
-    trips, movement_gaps, distance_total = detect_trips(odo, soc, speed, current)
+    trips, movement_gaps, distance_total = detect_trips(odo, soc, speed, current, ambient)
     distance_observed = round(sum(t["dist"] for t in trips), 1)
     print(f"detected {len(trips)} observed trips covering {distance_observed:g} km; "
           f"{sum(g['dist'] for g in movement_gaps):g} km falls inside sampling gaps")
@@ -1125,6 +1131,11 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             # sparse sampling underestimates short DC stops, so the DC bar is low
             "type": "DC fast" if kw >= 18 else ("AC" if kw >= 2.5 else "Slow / scheduled"),
         })
+
+    # tag each capacity estimate with its charging session's type
+    type_by_start = {r["start"]: r["type"] for r in charge_rows}
+    for e in cap_estimates:
+        e["type"] = type_by_start.get(e["start"])
 
     # ---- per-session charging power curves --------------------------------
     # power at the battery = charge current x pack voltage, 5-min buckets;
@@ -1159,14 +1170,19 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     for (t0, v0), (t1, v1) in zip(soc, soc[1:]):
         if v0 > v1 and t1 - t0 < 1800:
             drop_day[to_local(t1).date()] += v0 - v1
+    amb_day = collections.defaultdict(list)
+    for t, v in ambient:
+        amb_day[to_local(t).date()].append(v)
     consumption = []
     for d, vs in sorted(by_day.items()):
         km = max(vs) - min(vs)
         drop = drop_day.get(d, 0)
         if km >= 20 and drop >= 3:
+            ambs = amb_day.get(d)
             consumption.append({
                 "d": d.isoformat(), "km": round(km), "socUsed": round(drop, 1),
-                "kwh100": round(drop / 100 * PACK_KWH_USABLE / km * 100, 1)})
+                "kwh100": round(drop / 100 * PACK_KWH_USABLE / km * 100, 1),
+                "ambientC": round(sum(ambs) / len(ambs), 1) if ambs else None})
 
     # ---- idle (phantom) drain: SoC lost while parked >= 8 h ---------------
     odo_ts = [t for t, _ in odo]
@@ -1344,6 +1360,24 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         "chargingPolicy": {
             "maxCurrent": snap_item(r"^maxChargingCurrent$"),
             "autoUnlock": snap_item(r"^autoUnlockPlugWhenCharged$"),
+            "chargeMode": snap_item(r"^chargingStatus\.chargeMode$"),
+            "chargeType": snap_item(r"^chargingStatus\.chargeType$"),
+            "actionState": snap_item(r"^chargingStatus\.actionState$"),
+            "infrastructure": snap_item(r"plugStatusItem\.infrastructureState$"),
+            "plugType": snap_item(r"plugStatusItem\.chargingPlugType$"),
+            "v2hDischarge": snap_item(r"^immediate_discharging$"),
+            "v2hHomeStorage": snap_item(r"^home_storage_charging$"),
+        },
+        "platform": snap_val(r"^vehiclePlatform$"),
+        "careThreshold": snap_val(r"^state\.threshold$"),
+        "careNotification": snap_val(r"^state\.notification$"),
+        "aux": {
+            "residual": snap_item(r"^residualConsumption$"),
+            "interiorClima": snap_item(r"^interiorClimatizationConsumption$"),
+            "batteryClima": snap_item(r"^batteryClimatizationConsumption$"),
+            "budgetStartLevel": snap_item(r"^budgetStartBatteryLevel$"),
+            "warnedPower": snap_item(r"^hasWarnedPowerLevel$"),
+            "warnedBudget": snap_item(r"^hasWarnedDailyPowerBudget$"),
         },
         "climate": {
             "target": snap_item(r"targetTemperature\.temperature$"),
@@ -1711,9 +1745,11 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         wcsv("daily_distance.csv", ["date", "km", "km_across_sampling_gaps"],
              [(d["d"], d["km"], d["gapKm"]) for d in daily])
         wcsv("trips.csv", ["start_utc", "end_utc", "km", "max_kmh", "soc_from", "soc_to",
-                            "est_kwh_per_100km", "peak_discharge_a", "peak_regen_a", "confidence"],
+                            "est_kwh_per_100km", "peak_discharge_a", "peak_regen_a", "confidence",
+                            "ambient_c"],
              [(iso(t["start"]), iso(t["end"]), t["dist"], t["vmax"], t["socFrom"], t["socTo"],
-               t["kwh100"], t["peakDischargeA"], t["peakRegenA"], t["confidence"]) for t in trips])
+               t["kwh100"], t["peakDischargeA"], t["peakRegenA"], t["confidence"],
+               t["ambientC"]) for t in trips])
         wcsv("movement_gaps.csv", ["start_utc", "end_utc", "km", "gap_hours", "confidence",
                                    "timing_evidence", "moving_speed_samples", "max_kmh_in_gap",
                                    "discharge_samples", "evidence_from_utc", "evidence_to_utc"],
@@ -1728,8 +1764,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         wcsv("charges.csv", ["start_utc", "end_utc", "soc_from", "soc_to", "est_kwh", "est_kw", "type"],
              [(iso(c["start"]), iso(c["end"]), c["socFrom"], c["socTo"], c["kwh"],
                c["kw"], c["type"]) for c in charge_rows])
-        wcsv("consumption.csv", ["date", "km", "soc_used_pct", "kwh_per_100km"],
-             [(c["d"], c["km"], c["socUsed"], c["kwh100"]) for c in consumption])
+        wcsv("consumption.csv", ["date", "km", "soc_used_pct", "kwh_per_100km", "ambient_c"],
+             [(c["d"], c["km"], c["socUsed"], c["kwh100"], c["ambientC"]) for c in consumption])
         wcsv("battery_current.csv", ["timestamp_utc", "ampere"],
              [(iso(t), v) for t, v in current])
         wcsv("coolant_flow.csv", ["timestamp_utc", "litres_per_min"],
@@ -1966,6 +2002,7 @@ table.dv td:first-child { white-space:nowrap; }
 <section class="tab-panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
 <div class="sectionHead"><div><div class="eyebrow">Current state</div><h2>Vehicle snapshot</h2></div>
   <p>The most recent status records in the package plus headline figures for the selected range. Snapshot cards are single observations, not a continuous history.</p></div>
+<div id="ovNotes"></div>
 <section class="grid" id="statusCards"></section>
 <section class="grid" id="kpis"></section>
 </section>
@@ -2425,6 +2462,22 @@ document.getElementById("headSub").textContent =
   DATA.nFields + " fields · diagnostics " + fmtD(DATA.tMin) + " – " + fmtD(DATA.tMax) +
   " · times in " + DATA.tzLabel + (DATA.identifiersRedacted ? " · identifiers redacted" : "");
 
+/* ---- overview context notes ---- */
+(function(){
+  const wrap = document.getElementById("ovNotes"); if (!wrap) return;
+  const notes = [];
+  const lag = DATA.completeness ? DATA.completeness.diagnosticLagDays : null;
+  if (lag != null && lag >= 1)
+    notes.push("High-frequency diagnostic history ends " + fmtN(lag,1) +
+      " days before this package was created — the snapshot cards are newer than the charts and ledgers.");
+  if (DATA.status.platform)
+    notes.push(DATA.status.platform === "MEB"
+      ? "Vehicle platform MEB confirmed by the export — the 96-series battery analysis applies."
+      : "Vehicle platform " + DATA.status.platform + " reported — the MEB-specific battery capacity analysis may not apply to this vehicle.");
+  if (notes.length) wrap.style.marginBottom = "14px";
+  for (const n of notes) wrap.appendChild(el("div","note",n));
+})();
+
 /* ---- current status cards ---- */
 (function(){
   const S = DATA.status, wrap = document.getElementById("statusCards");
@@ -2483,9 +2536,16 @@ document.getElementById("headSub").textContent =
     ["Estimated range", S.range != null ? fmtN(S.range) + " km" : null],
     ["Battery temperature", S.battTempMin != null ? S.battTempMin + "–" + S.battTempMax + " °C" : null],
     ["Battery care mode", pretty(S.careMode)],
+    ["Care mode charge cap", S.careThreshold != null ? S.careThreshold + "%" : null],
+    ["Care notification", S.careNotification && S.careNotification !== "INVALID" ? pretty(S.careNotification) : null],
   ], meter);
   /* charging */
   const CP = S.chargingPolicy || {};
+  const hideInvalid = value => value == null ||
+    ["INVALID","UNDEFINED","UNKNOWN"].indexOf(String(value).toUpperCase()) !== -1 ? null : pretty(value);
+  const v2hParts = [];
+  if (itemValue(CP.v2hDischarge) != null) v2hParts.push("discharge " + yesNo(itemValue(CP.v2hDischarge)).toLowerCase());
+  if (itemValue(CP.v2hHomeStorage) != null) v2hParts.push("home storage " + yesNo(itemValue(CP.v2hHomeStorage)).toLowerCase());
   rowsCard("Charging", [
     ["State", pretty(S.chargeState)],
     ["Charge power", S.chargePower != null ? fmtN(S.chargePower,1) + " kW" : null],
@@ -2493,7 +2553,29 @@ document.getElementById("headSub").textContent =
     ["Mode", pretty(S.chargeModeSel)],
     ["Maximum current", prettyValue(itemValue(CP.maxCurrent)), itemTime(CP.maxCurrent)],
     ["Automatic plug unlock", onOff(itemValue(CP.autoUnlock)), itemTime(CP.autoUnlock)],
+    ["Charge mode", prettyValue(itemValue(CP.chargeMode)), itemTime(CP.chargeMode)],
+    ["Action state", prettyValue(itemValue(CP.actionState)), itemTime(CP.actionState)],
+    ["Charge type", hideInvalid(itemValue(CP.chargeType)), itemTime(CP.chargeType)],
+    ["Plug type", hideInvalid(itemValue(CP.plugType)), itemTime(CP.plugType)],
+    ["Infrastructure", prettyValue(itemValue(CP.infrastructure)), itemTime(CP.infrastructure)],
+    ["Bidirectional (V2H)", v2hParts.length ? v2hParts.join(" · ") : null,
+      latestTime(CP.v2hDischarge, CP.v2hHomeStorage)],
   ]);
+  /* auxiliary & climate load */
+  const AX = S.aux || {};
+  const auxRows = [
+    ["Residual network load", itemValue(AX.residual) != null ? itemValue(AX.residual) + " /h" : null, itemTime(AX.residual)],
+    ["Interior climatisation", itemValue(AX.interiorClima) != null ? itemValue(AX.interiorClima) + " /h" : null, itemTime(AX.interiorClima)],
+    ["Battery climatisation", itemValue(AX.batteryClima) != null ? itemValue(AX.batteryClima) + " /h" : null, itemTime(AX.batteryClima)],
+    ["24h budget start level", itemValue(AX.budgetStartLevel) != null ? itemValue(AX.budgetStartLevel) + "%" : null, itemTime(AX.budgetStartLevel)],
+    ["Power budget warning", yesNo(itemValue(AX.warnedPower)), itemTime(AX.warnedPower)],
+    ["Daily budget warning", yesNo(itemValue(AX.warnedBudget)), itemTime(AX.warnedBudget)],
+  ];
+  if (auxRows.some(row => row[1] != null)){
+    const auxCard = rowsCard("Auxiliary & climate load", auxRows);
+    auxCard.appendChild(el("div","foot",
+      "Consumption values are the vehicle's own normalized figures (dictionary unit: 1/h) — comparable between exports, not directly convertible to watts."));
+  }
   /* vehicle */
   const PL = S.parkingLights || {};
   const parkingLightValues = [
@@ -2707,7 +2789,7 @@ function makeCards(){
   c.chgCurves.root.style.gridColumn = "1 / -1";
   c.cons = card(driveChartsWrap, "Energy consumption per day",
     "kWh/100km from SoC drop while driving, using the " + PACK_SHORT + " " + DATA.packKwh + " kWh usable capacity — days with ≥20 km", {
-    head:["Date","km","SoC used","kWh/100km"], numCols:[1,2,3] }, "derived");
+    head:["Date","km","SoC used","kWh/100km","Ambient"], numCols:[1,2,3,4] }, "derived");
 
   c.soc = card(batteryChartsWrap, "Battery state of charge", "%, diagnostic channel 180886 — sampled only while the car is awake", {
     head:["Time (" + DATA.tzLabel + ")","SoC %"], numCols:[1] }, "inferred");
@@ -2826,7 +2908,8 @@ function renderCharts(){
     items: cons.map(c => ({ label:fmtD(dayKeyToT(c.d) + 43200), v:c.kwh100,
       tipWhen:c.d + " · " + c.km + " km" })),
     unitShort:"", valName:"kWh/100km", dec:1 });
-  cards.cons.setRows(cons.map(c => [c.d, c.km, c.socUsed + "%", c.kwh100]));
+  cards.cons.setRows(cons.map(c => [c.d, c.km, c.socUsed + "%", c.kwh100,
+    c.ambientC != null ? c.ambientC + " °C" : "—"]));
 
   /* cell imbalance */
   const sp = fPts(DATA.spread);
@@ -2962,7 +3045,7 @@ function renderDriveTables(){
   th.appendChild(tg); th.appendChild(prov("derived")); c.appendChild(th);
   const scroll = el("div","tableWrap"); scroll.style.marginTop = "8px";
   scroll.appendChild(buildTable(
-    ["Start","End / duration","Distance","Avg / max speed","Moving","SoC","Est. consumption","Peak current"],
+    ["Start","End / duration","Distance","Avg / max speed","Moving","SoC","Est. consumption","Ambient","Peak current"],
     trips.map(s => {
       const mins = Math.round((s.end - s.start)/60);
       const dur = mins >= 60 ? Math.floor(mins/60) + " h " + (mins%60) + " min" : mins + " min";
@@ -2977,10 +3060,33 @@ function renderDriveTables(){
       return [fmtDT(s.start), fmtT(s.end) + " · " + dur,
         fmtN(s.dist,1) + " km", spd, mov,
         (s.socFrom != null && s.socTo != null) ? s.socFrom + "% → " + s.socTo + "%" : "—",
-        cons2, current];
-    }), [2,4,6]));
+        cons2, s.ambientC != null ? s.ambientC + " °C" : "—", current];
+    }), [2,4,6,7]));
   c.appendChild(scroll);
   wrap.appendChild(c);
+
+  /* parked drain events, annotated with the thermal-mode mix */
+  const climaIdx = new Set(DATA.modeNames.map((m,i) => /Heizen|Kuehlen/.test(m.raw) ? i : -1).filter(i => i >= 0));
+  const dp = DATA.drainPairs.filter(p => p[0] >= range[0] && p[1] <= range[1]).slice().reverse();
+  const dc = el("div","card"), dh = el("header"), dg = el("div","grow");
+  dg.appendChild(el("h2",null,"Parked drain events"));
+  dg.appendChild(el("div","sub",dp.length + " parks of ≥ 8 h with no odometer movement; thermal-mode samples inside each park hint at why charge was lost"));
+  dh.appendChild(dg); dh.appendChild(prov("derived")); dc.appendChild(dh);
+  const dw = el("div","tableWrap"); dw.style.marginTop = "8px";
+  dw.appendChild(buildTable(
+    ["Park start","Until","Duration","SoC lost","Rate","Mode samples","Climate share","Reading"],
+    dp.map(([t0,t1,drop]) => {
+      const days = (t1 - t0) / 86400;
+      let n = 0, clima = 0;
+      for (const [t,i] of DATA.modeRaw) if (t >= t0 && t <= t1){ n++; if (climaIdx.has(i)) clima++; }
+      const share = n ? clima / n * 100 : null;
+      const reading = n === 0 ? "No mode telemetry" :
+        share >= 10 ? "Climate ran — likely conditioning" : "Quiet park";
+      return [fmtDT(t0), fmtDT(t1), Math.round(days * 24) + " h", drop + "%",
+        (drop / days).toFixed(1) + " %/day", fmtN(n),
+        share != null ? share.toFixed(0) + "%" : "—", reading];
+    }), [2,3,4,5,6]));
+  dc.appendChild(dw); wrap.appendChild(dc);
 
   const gaps = DATA.movementGaps.filter(g => g.end >= range[0] && g.start <= range[1]).slice().reverse();
   const gc = el("div","card"), gh = el("header"), gg = el("div","grow");
@@ -3106,10 +3212,18 @@ const HEALTH_LABEL = {
   for (const [,text] of H.reasons) rl.appendChild(el("div","hreason", text));
   c.appendChild(rl);
   if (DATA.packNote) c.appendChild(el("div","foot", DATA.packNote + "."));
-  if (DATA.capEstimates && DATA.capEstimates.length)
-    c.appendChild(el("div","foot","Capacity measurements: " + DATA.capEstimates.map(e =>
-      fmtD(e.start) + " ≈ " + e.capKwh + " kWh (over a " + e.dsoc + "% charge)").join(" · ") +
-      " — median is used for all energy figures. More merged exports sharpen this and reveal degradation trends."));
+  if (DATA.capEstimates && DATA.capEstimates.length){
+    const tw = el("div","tableWrap"); tw.style.marginTop = "10px";
+    tw.appendChild(buildTable(
+      ["Charge start","Type","SoC window","Duration","Energy in","Current coverage","Samples","Measured usable"],
+      DATA.capEstimates.map(e => [fmtDT(e.start), e.type || "—",
+        e.socFrom + "% → " + e.socTo + "%", e.hours + " h", "~" + e.kwhIn + " kWh",
+        e.coveragePct + "%", fmtN(e.samples), e.capKwh + " kWh"]), [3,4,5,6,7]));
+    c.appendChild(tw);
+    c.appendChild(el("div","foot","How capacity was measured: battery current × pack voltage integrated over each charging session, divided by the SoC gained. " +
+      "The median (" + DATA.measuredKwh + " kWh) drives all energy figures; wider SoC windows and fuller current coverage make an estimate more reliable. " +
+      "More merged exports sharpen this and reveal degradation trends."));
+  }
   c.appendChild(el("div","foot",
     "Diagnostic estimate from charging sessions and cell voltages — not an official state-of-health measurement."));
   wrap.appendChild(c);
