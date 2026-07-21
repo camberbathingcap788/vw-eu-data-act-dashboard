@@ -181,9 +181,17 @@ checking** — built from two measurable indicators:
 Merge several exports over time and the per-charge capacity measurements
 become a **degradation trend** — the number the manufacturer doesn't show you.
 
-This is a diagnostic estimate measured at the battery (charger losses
-excluded), not an official state-of-health certificate — treat "worth
-checking" as a prompt to investigate, not a diagnosis.
+The ∫I·V integration happens at the battery terminals, so charging overhead
+and any climate or conditioning load while plugged in never enter the figure.
+Structured-format exports carry no current channel; there the fallback is the
+vehicle's own reported session energy over the SoC gained — metered before
+charging overhead, so each session is an **optimistic upper bound**. In both
+paths, estimates exceeding the largest pack the model ever shipped with
+(plus 5% tolerance) are flagged ⚠ and excluded from the median — usable
+capacity beyond the physical pack is proof of energy that never reached the
+battery. This is a diagnostic estimate, not an official state-of-health
+certificate — treat "worth checking" as a prompt to investigate, not a
+diagnosis.
 
 ## Two export formats
 

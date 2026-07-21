@@ -162,7 +162,7 @@ def estimate_pack_capacity(charge_runs, current, cell_max, cell_min):
     return estimates
 
 
-def assess_battery_health(measured_kwh, nominal_kwh, spread_stats):
+def assess_battery_health(measured_kwh, nominal_kwh, spread_stats, reported=False):
     """Plain-language verdict from measured capacity and cell imbalance.
     Deliberately conservative: 'attention' is a prompt to investigate, not a
     diagnosis. Returns dict for the dashboard's health card."""
@@ -184,7 +184,19 @@ def assess_battery_health(measured_kwh, nominal_kwh, spread_stats):
     soh = None
     if measured_kwh and nominal_kwh:
         soh = min(100, round(measured_kwh / nominal_kwh * 100))
-        if soh >= 90:
+        if reported:
+            # energy metered before charging overhead and any climate or
+            # conditioning load — an optimistic upper bound on usable capacity
+            if soh >= 90:
+                levels.append(0)
+                reasons.append(("good", f"Vehicle-reported charging energy suggests ≈ {measured_kwh:g} kWh usable — about {soh}% of the {nominal_kwh:g} kWh nominal pack (an optimistic bound: charging overhead is included)"))
+            elif soh >= 78:
+                levels.append(1)
+                reasons.append(("fair", f"Vehicle-reported charging energy suggests ≈ {measured_kwh:g} kWh usable (~{soh}% of nominal) — normal aging, and the true figure may be somewhat lower"))
+            else:
+                levels.append(2)
+                reasons.append(("attention", f"Vehicle-reported charging energy suggests ≈ {measured_kwh:g} kWh usable (~{soh}% of nominal) — approaching the 70% warranty threshold, and reported energy tends to overestimate"))
+        elif soh >= 90:
             levels.append(0)
             reasons.append(("good", f"Measured usable capacity ≈ {measured_kwh:g} kWh — about {soh}% of the {nominal_kwh:g} kWh nominal pack"))
         elif soh >= 78:
@@ -1156,16 +1168,28 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                     "samples": len(curves_raw.get(i, {})) or None,
                     "kwhIn": round(kwh, 1), "capKwh": round(cap, 1)})
         cap_source_reported = bool(cap_estimates)
-    measured_kwh = round(median([e["capKwh"] for e in cap_estimates]), 1) if cap_estimates else None
+    # Physical plausibility: usable capacity can never exceed the largest pack
+    # this model shipped with. Estimates above it (plus 5% measurement
+    # tolerance) prove the session counted energy that never reached the
+    # battery — charging overhead, climate or conditioning while plugged in.
+    # They stay visible but are excluded from the median.
+    pack_max = max(pack_options_for_vin(vin))
+    for e in cap_estimates:
+        e["plausible"] = e["capKwh"] <= pack_max * 1.05
+    plausible_caps = [e["capKwh"] for e in cap_estimates if e["plausible"]]
+    if len(plausible_caps) < len(cap_estimates):
+        print(f"excluded {len(cap_estimates) - len(plausible_caps)} capacity estimate(s) above "
+              f"the {pack_max:g} kWh pack maximum (energy counted that never reached the battery)")
+    measured_kwh = round(median(plausible_caps), 1) if plausible_caps else None
     global PACK_KWH_USABLE
     if pack_kwh is not None:
         PACK_KWH_USABLE = pack_kwh
         pack_source = "set with --pack-kwh"
     elif measured_kwh:
         PACK_KWH_USABLE = measured_kwh
-        pack_source = (f"measured from {len(cap_estimates)} vehicle-reported charging session(s)"
+        pack_source = (f"measured from {len(plausible_caps)} vehicle-reported charging session(s)"
                        if cap_source_reported else
-                       f"measured from {len(cap_estimates)} charging session(s)")
+                       f"measured from {len(plausible_caps)} charging session(s)")
     else:
         pack_source = "default assumption — pass --pack-kwh to correct"
     pack_opts = pack_options_for_vin(vin)
@@ -1409,7 +1433,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     } if spread_values else {}
 
     # ---- battery health verdict -------------------------------------------
-    health = assess_battery_health(measured_kwh, nominal_kwh, spread_stats)
+    health = assess_battery_health(measured_kwh, nominal_kwh, spread_stats,
+                                   reported=cap_source_reported)
     verdict_txt = {"good": "looks healthy", "fair": "shows normal wear",
                    "attention": "worth checking", "unknown": "not enough data"}[health["verdict"]]
     print(f"battery health: {verdict_txt}"
@@ -3573,18 +3598,22 @@ const HEALTH_LABEL = {
   c.appendChild(rl);
   if (DATA.packNote) c.appendChild(el("div","foot", DATA.packNote + "."));
   if (DATA.capEstimates && DATA.capEstimates.length){
+    const reportedCaps = DATA.capEstimates.every(e => e.coveragePct == null);
+    const excluded = DATA.capEstimates.filter(e => e.plausible === false).length;
     const tw = el("div","tableWrap"); tw.style.marginTop = "10px";
     tw.appendChild(buildTable(
-      ["Charge start","Type","SoC window","Duration","Energy in","Current coverage","Samples","Measured usable"],
+      ["Charge start","Type","SoC window","Duration","Energy in","Current coverage","Samples",
+       reportedCaps ? "Energy in / SoC gained" : "Measured usable"],
       DATA.capEstimates.map(e => [fmtDT(e.start), e.type || "—",
         e.socFrom + "% → " + e.socTo + "%", e.hours + " h", "~" + e.kwhIn + " kWh",
         e.coveragePct != null ? e.coveragePct + "%" : "—",
-        e.samples != null ? fmtN(e.samples) : "—", e.capKwh + " kWh"]), [3,4,5,6,7]));
+        e.samples != null ? fmtN(e.samples) : "—",
+        e.capKwh + " kWh" + (e.plausible === false ? " ⚠" : "")]), [3,4,5,6,7]));
     c.appendChild(tw);
-    const reportedCaps = DATA.capEstimates.every(e => e.coveragePct == null);
     c.appendChild(el("div","foot",(reportedCaps
-      ? "How capacity was measured: the vehicle's own reported session energy divided by the SoC gained. Energy is reported at 1 kWh and SoC at 1% resolution, so individual sessions scatter — the median across many sessions is the robust figure. "
-      : "How capacity was measured: battery current × pack voltage integrated over each charging session, divided by the SoC gained. ") +
+      ? "How capacity was estimated: the vehicle's own reported session energy divided by the SoC gained. That energy is metered before charging overhead and before any climate or battery conditioning that ran while plugged in, so each session is an optimistic upper bound; energy resolution is 1 kWh and SoC 1%, so individual sessions also scatter. "
+      : "How capacity was measured: battery current × pack voltage integrated over each charging session, divided by the SoC gained — measured at the battery terminals, so charging overhead and any climate or conditioning load while plugged in never enter the figure. ") +
+      (excluded ? "⚠ " + excluded + " session(s) exceed the largest pack this model shipped with — proof of energy that never reached the battery — and are excluded from the median. " : "") +
       "The median (" + DATA.measuredKwh + " kWh) drives all energy figures" +
       (reportedCaps ? ". " : "; wider SoC windows and fuller current coverage make an estimate more reliable. ") +
       "More merged exports sharpen this and reveal degradation trends."));
