@@ -185,6 +185,26 @@ This is a diagnostic estimate measured at the battery (charger losses
 excluded), not an official state-of-health certificate — treat "worth
 checking" as a prompt to investigate, not a diagnosis.
 
+## Two export formats
+
+The portal delivers (at least) two different package formats, and the tool
+handles both:
+
+- **Diagnostic-channel format** (seen on a VW ID.7): hundreds of thousands of
+  records in undocumented numeric channels — odometer, SoC, cell voltages,
+  speed, current — from which trips, battery health and everything else are
+  reconstructed. Roughly two months of history.
+- **Structured format** (seen on a Škoda Enyaq): no numeric channels at all;
+  instead documented `chargingSession.[n]` records (start/end, SoC window,
+  energy, average/peak power, AC/DC), `powerCurve` samples for recent
+  sessions, daily charged-energy aggregates — and high-volume event records
+  (`speed`, `ignition`) delivered **without values**, timestamps only. Around
+  eight months of history. Here the charging ledger and power curves are the
+  vehicle's own figures (labelled *observed*), usable capacity is measured
+  from reported session energy over the SoC gained, and the driving heatmap
+  is built from the value-less activity events; odometer/trip history simply
+  isn't in the package and the dashboard says so.
+
 ## Data quality notes
 
 - The export contains sensor **error values** the script filters out: SoC
