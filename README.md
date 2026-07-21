@@ -191,6 +191,13 @@ checking" as a prompt to investigate, not a diagnosis.
   against documented snapshot fields, and are labelled *inferred* in the UI.
 - Energy figures (kWh, kWh/100km, charge power) are estimated from SoC deltas
   and the assumed pack capacity — good for trends, not billing.
+- **No location or route data**: a systematic search of every channel in the
+  reference export — including the opaque numeric channels and long encoded
+  values — found no coordinates, addresses, route objects or serialized
+  journey payloads. The only movement evidence is the odometer, speed and
+  battery-current telemetry the dashboard already uses; kilometres inside
+  odometer sampling gaps are reported with whatever sparse timing evidence
+  exists, never reconstructed into trips.
 - Timestamps in the export are UTC; display uses `--utc-offset`.
 
 ## Is the package complete? (spoiler: probably not)

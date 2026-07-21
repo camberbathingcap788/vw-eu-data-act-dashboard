@@ -965,10 +965,26 @@ def detect_trips(odo, soc, speed, current, sample_gap_s=TRIP_SAMPLE_GAP_S):
             "confidence": "observed",
         })
 
-    movement_gaps = [{
-        "start": a, "end": b, "dist": round(km, 1),
-        "hours": round((b - a) / 3600, 1), "confidence": "sampling gap",
-    } for a, b, km in gaps]
+    # Sampling gaps still deserve honesty about what little telemetry they do
+    # contain: sparse speed or battery-discharge samples prove the car moved
+    # at a knowable time, even though most of the gap's distance stays
+    # unsampled. Surface that as evidence, never as reconstructed trips —
+    # one gap can hide several drives.
+    movement_gaps = []
+    for a, b, km in gaps:
+        moving = [(t, v) for t, v in speed if a < t < b and v > 1]
+        load = [(t, v) for t, v in current if a < t < b and v < -5]
+        times = [t for t, _ in moving] + [t for t, _ in load]
+        movement_gaps.append({
+            "start": a, "end": b, "dist": round(km, 1),
+            "hours": round((b - a) / 3600, 1), "confidence": "sampling gap",
+            "movingSamples": len(moving),
+            "vmaxInGap": round(max(v for _, v in moving)) if moving else None,
+            "loadSamples": len(load),
+            "evidenceFrom": min(times) if times else None,
+            "evidenceTo": max(times) if times else None,
+            "timing": "partial" if times else "none",
+        })
     return trips, movement_gaps, round(sum(e[2] for e in edges), 1)
 
 
@@ -1698,8 +1714,13 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                             "est_kwh_per_100km", "peak_discharge_a", "peak_regen_a", "confidence"],
              [(iso(t["start"]), iso(t["end"]), t["dist"], t["vmax"], t["socFrom"], t["socTo"],
                t["kwh100"], t["peakDischargeA"], t["peakRegenA"], t["confidence"]) for t in trips])
-        wcsv("movement_gaps.csv", ["start_utc", "end_utc", "km", "gap_hours", "confidence"],
-             [(iso(g["start"]), iso(g["end"]), g["dist"], g["hours"], g["confidence"])
+        wcsv("movement_gaps.csv", ["start_utc", "end_utc", "km", "gap_hours", "confidence",
+                                   "timing_evidence", "moving_speed_samples", "max_kmh_in_gap",
+                                   "discharge_samples", "evidence_from_utc", "evidence_to_utc"],
+             [(iso(g["start"]), iso(g["end"]), g["dist"], g["hours"], g["confidence"],
+               g["timing"], g["movingSamples"], g["vmaxInGap"], g["loadSamples"],
+               iso(g["evidenceFrom"]) if g["evidenceFrom"] else "",
+               iso(g["evidenceTo"]) if g["evidenceTo"] else "")
               for g in movement_gaps])
         wcsv("sessions.csv", ["start_utc", "end_utc", "type", "km", "max_kmh", "soc_from", "soc_to"],
              [(iso(s["start"]), iso(s["end"]), s["kind"], s["dist"], s["vmax"],
@@ -2964,13 +2985,28 @@ function renderDriveTables(){
   const gaps = DATA.movementGaps.filter(g => g.end >= range[0] && g.start <= range[1]).slice().reverse();
   const gc = el("div","card"), gh = el("header"), gg = el("div","grow");
   gg.appendChild(el("h2",null,"Movement across sampling gaps"));
+  const gPartial = gaps.filter(g => g.timing === "partial");
+  const gPartialKm = gPartial.reduce((a,g)=>a+g.dist,0);
+  const gNoneKm = gaps.reduce((a,g)=>a+g.dist,0) - gPartialKm;
   gg.appendChild(el("div","sub",fmtN(gaps.reduce((a,g)=>a+g.dist,0)) +
-    " km is proven by odometer change, but cannot be assigned to an exact trip time"));
+    " km is proven by odometer change, but cannot be assigned to exact trips — " +
+    fmtN(gPartialKm) + " km falls in gaps with partial timing evidence, " + fmtN(gNoneKm) + " km with none"));
   gh.appendChild(gg); gh.appendChild(prov("derived")); gc.appendChild(gh);
   const gs = el("div","tableWrap"); gs.appendChild(buildTable(
-    ["Last sample","Next sample","Gap","Distance added","Evidence"],
-    gaps.map(g => [fmtDT(g.start),fmtDT(g.end),g.hours + " h",g.dist + " km","Timing unresolved"]),[2,3]));
-  gc.appendChild(gs); wrap.appendChild(gc);
+    ["Last sample","Next sample","Gap","Distance added","Movement evidence in gap","Likely movement window"],
+    gaps.map(g => {
+      const ev = [];
+      if (g.movingSamples) ev.push(g.movingSamples + " moving speed sample" + (g.movingSamples === 1 ? "" : "s") +
+        (g.vmaxInGap != null ? " · up to " + g.vmaxInGap + " km/h" : ""));
+      if (g.loadSamples) ev.push(g.loadSamples + " battery-discharge sample" + (g.loadSamples === 1 ? "" : "s"));
+      return [fmtDT(g.start), fmtDT(g.end), g.hours + " h", g.dist + " km",
+        ev.length ? ev.join(" · ") : "No movement telemetry",
+        g.evidenceFrom != null ? fmtDT(g.evidenceFrom) + " – " + fmtDT(g.evidenceTo) : "—"];
+    }),[2,3]));
+  gc.appendChild(gs);
+  gc.appendChild(el("div","foot","Gaps with evidence are not promoted to trips: one gap can hide several drives, " +
+    "and the sparse samples cover only a fraction of the distance. The window shows when movement is proven, not its full extent."));
+  wrap.appendChild(gc);
 }
 
 /* ---- full-export activity and settings ---- */
