@@ -1265,7 +1265,10 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
 
     # ---- latest snapshot values -------------------------------------------
     counts = collections.Counter(r["dataFieldName"] for r in recs)
-    snap_recs = [r for r in recs if counts[r["dataFieldName"]] <= 9]
+    # Documented snapshot/configuration fields are non-numeric. Do not cap
+    # them by record count: a long archive assembled from many exports can
+    # legitimately contain more than nine snapshots of the same field.
+    snap_recs = [r for r in recs if not r["dataFieldName"].isdigit()]
 
     def snap(pattern):
         rx = re.compile(pattern)
@@ -1280,6 +1283,22 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     def snap_val(pattern):
         b = snap(pattern)
         return b[1] if b else None
+
+    def snap_item(pattern):
+        """Snapshot value plus its own capture time.
+
+        Snapshot groups are assembled from several backend reports that can be
+        minutes or weeks apart, so a single card-wide timestamp is not enough.
+        """
+        b = snap(pattern)
+        return {"value": b[1], "time": b[0] or None} if b else None
+
+    def item_value(item):
+        return item["value"] if item else None
+
+    def latest_item_time(*items):
+        times = [item["time"] for item in items if item and item.get("time")]
+        return max(times) if times else None
 
     status = {
         "odometer": snap_val(r"^mileage_info\.value$"),
@@ -1301,16 +1320,116 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         "serviceDueDays": snap_val(r"service_maintenance_info\.due_in_time\.value$"),
         "serviceType": snap_val(r"service_maintenance_info\.service_type$"),
         "doors": {},
+        "closures": [],
+        "parkingLights": {
+            "left": snap_item(r"^parking_lights_info\.left_status\.value$"),
+            "right": snap_item(r"^parking_lights_info\.right_status\.value$"),
+        },
+        "chargingPolicy": {
+            "maxCurrent": snap_item(r"^maxChargingCurrent$"),
+            "autoUnlock": snap_item(r"^autoUnlockPlugWhenCharged$"),
+        },
+        "climate": {
+            "target": snap_item(r"targetTemperature\.temperature$"),
+            "windowHeating": snap_item(r"windowHeatingState$"),
+            "state": snap_item(r"^envelope\.\[\d+\]\.report\.status$"),
+            "trigger": snap_item(r"^envelope\.\[\d+\]\.report\.trigger$"),
+            "withoutExternalPower": snap_item(r"climatizationWithoutExternalPower$"),
+            "atUnlock": snap_item(r"climatizationElementSettings\.isClimatizationAtUnlock$"),
+            "zoneFrontLeft": snap_item(r"climatizationElementSettings\.zoneFrontLeftEnabled$"),
+            "zoneFrontRight": snap_item(r"climatizationElementSettings\.zoneFrontRightEnabled$"),
+            "zoneRearLeft": snap_item(r"climatizationElementSettings\.zoneRearLeftEnabled$"),
+            "zoneRearRight": snap_item(r"climatizationElementSettings\.zoneRearRightEnabled$"),
+            "timerEnabled": snap_item(r"report\.timers\.isEnabled$"),
+            "chargeTimerOption": snap_item(r"^timer_charging$"),
+            "chargeClimateTimerOption": snap_item(r"^timer_charging_climatization$"),
+            "timerIds": [],
+            "timerIdsCapturedAt": None,
+        },
+        "connectivity": {
+            "vehicleConnected": snap_item(r"^isConnected$"),
+            "activeDomains": snap_item(r"^activeDomains$"),
+            "osShutdown": snap_item(r"^osShutdown$"),
+            "v2x": snap_item(r"^352341537-0-36$"),
+            "lastConnection": None,
+        },
         "capturedAt": None,
     }
+
+    # V2X is a documented hex-encoded on/off setting. Decode it with the same
+    # conservative logic used by the full configuration table.
+    if status["connectivity"]["v2x"]:
+        status["connectivity"]["v2x"]["value"] = decode_config_value(
+            status["connectivity"]["v2x"]["value"],
+            BUNDLED_FIELD_DESCRIPTIONS.get("352341537-0-36", ""))
+
+    # These fields have no timestampUtc; connectionTimestamp is itself an
+    # epoch timestamp in milliseconds and is the only defensible time to show.
+    connection_raw = snap_val(r"^connectionTimestamp$")
+    if connection_raw:
+        try:
+            connection_epoch = int(float(connection_raw))
+            if connection_epoch > 10 ** 11:
+                connection_epoch //= 1000
+            status["connectivity"]["lastConnection"] = connection_epoch
+        except ValueError:
+            pass
+
+    # The flattened export can deliver several timer IDs but only one
+    # unindexed isEnabled value. Preserve every ID without claiming which one
+    # the state belongs to.
+    timer_ids = []
+    timer_times = []
+    timer_rx = re.compile(r"^envelope\.\[\d+\]\.report\.timers\.id$")
+    for r in snap_recs:
+        if not timer_rx.search(r["dataFieldName"]):
+            continue
+        value = r["value"].strip()
+        if value not in timer_ids:
+            timer_ids.append(value)
+        t = parse_ts(r.get("timestampUtc"))
+        if t:
+            timer_times.append(t)
+    timer_ids.sort(key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
+    status["climate"]["timerIds"] = timer_ids
+    status["climate"]["timerIdsCapturedAt"] = max(timer_times) if timer_times else None
+
     for pos in ("front_left", "front_right", "rear_left", "rear_right"):
-        status["doors"]["door " + pos.replace("_", " ")] = \
-            snap_val(rf"^door_info\.{pos}\.door_status\.value$")
-        w = snap_val(rf"^window_info\.{pos}\.window_status\.value$")
-        if w:
-            status["doors"]["window " + pos.replace("_", " ")] = w
-    status["doors"]["hood"] = snap_val(r"^hood_info\.hood_status\.value$")
-    status["doors"]["trunk"] = snap_val(r"^trunk_lid_info\.trunk_lid_status\.value$")
+        label = pos.replace("_", " ")
+        door_state = snap_item(rf"^door_info\.{pos}\.door_status\.value$")
+        door_lock = snap_item(rf"^door_info\.{pos}\.door_lock_status\.value$")
+        status["doors"]["door " + label] = item_value(door_state)
+        if door_state or door_lock:
+            status["closures"].append({
+                "label": label + " door", "state": item_value(door_state),
+                "lock": item_value(door_lock), "openPct": None,
+                "time": latest_item_time(door_state, door_lock),
+            })
+
+        window_state = snap_item(rf"^window_info\.{pos}\.window_status\.value$")
+        window_pct = snap_item(rf"^window_info\.{pos}\.window_percentage_open\.value$")
+        if window_state:
+            status["doors"]["window " + label] = item_value(window_state)
+        if window_state or window_pct:
+            status["closures"].append({
+                "label": label + " window", "state": item_value(window_state),
+                "lock": None, "openPct": item_value(window_pct),
+                "time": latest_item_time(window_state, window_pct),
+            })
+
+    for label, state_pattern, lock_pattern in (
+            ("hood", r"^hood_info\.hood_status\.value$", r"^hood_info\.hood_lock_status\.value$"),
+            ("trunk", r"^trunk_lid_info\.trunk_lid_status\.value$",
+             r"^trunk_lid_info\.trunk_lid_lock_status\.value$")):
+        state_item = snap_item(state_pattern)
+        lock_item = snap_item(lock_pattern)
+        status["doors"][label] = item_value(state_item)
+        if state_item or lock_item:
+            status["closures"].append({
+                "label": label, "state": item_value(state_item),
+                "lock": item_value(lock_item), "openPct": None,
+                "time": latest_item_time(state_item, lock_item),
+            })
     cap = snap(r"^mileage_info\.value$")
     status["capturedAt"] = cap[0] if cap else None
 
@@ -2290,16 +2409,41 @@ document.getElementById("headSub").textContent =
   const S = DATA.status, wrap = document.getElementById("statusCards");
   const pretty = s => s == null ? "—" : String(s).replaceAll("_"," ").toLowerCase()
       .replace(/^\w/, c => c.toUpperCase());
+  const prettyValue = value => value == null ? null : pretty(value);
+  const itemValue = item => item && item.value != null ? item.value : null;
+  const itemTime = item => item && item.time ? item.time : null;
+  const yesNo = value => value == null ? null
+    : String(value).toLowerCase() === "true" ? "Yes"
+    : String(value).toLowerCase() === "false" ? "No" : pretty(value);
+  const onOff = value => value == null ? null
+    : String(value).toLowerCase() === "true" ? "On"
+    : String(value).toLowerCase() === "false" ? "Off" : pretty(value);
+  const latestTime = (...items) => {
+    const times = items.map(itemTime).filter(Boolean);
+    return times.length ? Math.max(...times) : null;
+  };
+  const capturedLabel = times => {
+    times = times.filter(Boolean).sort((a,b) => a-b);
+    if (!times.length) return null;
+    const first = times[0], last = times[times.length-1];
+    return first === last ? "Captured " + fmtDT(first)
+      : "Captured between " + fmtDT(first) + " and " + fmtDT(last);
+  };
   function rowsCard(title, rows, extraTop){
     const c = el("div","card");
     const h = el("header"), g = el("div","grow"); g.appendChild(el("h2",null,title));
     h.appendChild(g); h.appendChild(prov("observed")); c.appendChild(h);
     if (extraTop) c.appendChild(extraTop);
     const rl = el("div","rows"); rl.style.marginTop = "8px";
-    for (const [k,v] of rows){ if (v == null) continue;
+    const captureTimes = [];
+    for (const [k,v,t] of rows){ if (v == null) continue;
       const r = el("div","r"); r.appendChild(el("span","k",k)); r.appendChild(el("span","v",v));
+      if (t){ r.title = "Captured " + fmtFull(t); captureTimes.push(t); }
       rl.appendChild(r); }
-    c.appendChild(rl); wrap.appendChild(c); return c;
+    c.appendChild(rl);
+    const capture = capturedLabel(captureTimes);
+    if (capture) c.appendChild(el("div","foot",capture + " · hover a row for its exact timestamp"));
+    wrap.appendChild(c); return c;
   }
   /* battery */
   const meter = el("div","meter");
@@ -2320,18 +2464,26 @@ document.getElementById("headSub").textContent =
     ["Battery care mode", pretty(S.careMode)],
   ], meter);
   /* charging */
+  const CP = S.chargingPolicy || {};
   rowsCard("Charging", [
     ["State", pretty(S.chargeState)],
     ["Charge power", S.chargePower != null ? fmtN(S.chargePower,1) + " kW" : null],
     ["Plug", S.plugConn != null ? pretty(S.plugConn) + " · " + pretty(S.plugLock) : null],
     ["Mode", pretty(S.chargeModeSel)],
+    ["Maximum current", prettyValue(itemValue(CP.maxCurrent)), itemTime(CP.maxCurrent)],
+    ["Automatic plug unlock", onOff(itemValue(CP.autoUnlock)), itemTime(CP.autoUnlock)],
   ]);
   /* vehicle */
+  const PL = S.parkingLights || {};
+  const parkingLightValues = [
+    itemValue(PL.left) != null ? "Left " + pretty(itemValue(PL.left)).toLowerCase() : null,
+    itemValue(PL.right) != null ? "right " + pretty(itemValue(PL.right)).toLowerCase() : null,
+  ].filter(Boolean);
   const vc = rowsCard("Vehicle", [
     ["Outdoor temperature", S.outdoorTemp != null ? S.outdoorTemp + " °C" : null],
-    ["Climate target", S.climaTarget != null ? S.climaTarget + " °C" : null],
-    ["Window heating", pretty(S.windowHeating)],
     ["Parking brake", S.parkingBrake === "true" ? "Engaged" : (S.parkingBrake === "false" ? "Released" : null)],
+    ["Parking lights", parkingLightValues.length ? parkingLightValues.join(" · ") : null,
+      latestTime(PL.left, PL.right)],
     ["Next service", S.serviceDueDays != null ?
         "in " + fmtN(S.serviceDueDays) + " days" + (S.serviceType ? " (" + pretty(S.serviceType).replace("Service type ","") + ")" : "") : null],
   ]);
@@ -2343,18 +2495,90 @@ document.getElementById("headSub").textContent =
     hero.appendChild(u);
     vc.insertBefore(hero, vc.children[1]);
   }
+
+  /* climate */
+  const CL = S.climate || {};
+  const zonePair = (left, right) => {
+    const parts = [];
+    if (itemValue(left) != null) parts.push("Left " + onOff(itemValue(left)).toLowerCase());
+    if (itemValue(right) != null) parts.push("right " + onOff(itemValue(right)).toLowerCase());
+    return parts.length ? parts.join(" · ") : null;
+  };
+  const timerIds = CL.timerIds || [];
+  const timerState = itemValue(CL.timerEnabled) != null
+    ? onOff(itemValue(CL.timerEnabled)) + (timerIds.length ? " · IDs " + timerIds.join(", ") : "")
+    : (timerIds.length ? "IDs " + timerIds.join(", ") : null);
+  const climateRows = [
+    ["State", prettyValue(itemValue(CL.state)), itemTime(CL.state)],
+    ["Trigger", prettyValue(itemValue(CL.trigger)), itemTime(CL.trigger)],
+    ["Target", itemValue(CL.target) != null ? fmtN(itemValue(CL.target),1) + " °C" : null,
+      itemTime(CL.target)],
+    ["Window heating", onOff(itemValue(CL.windowHeating)), itemTime(CL.windowHeating)],
+    ["Run without external power", yesNo(itemValue(CL.withoutExternalPower)),
+      itemTime(CL.withoutExternalPower)],
+    ["Start when unlocking", yesNo(itemValue(CL.atUnlock)), itemTime(CL.atUnlock)],
+    ["Front zones", zonePair(CL.zoneFrontLeft, CL.zoneFrontRight),
+      latestTime(CL.zoneFrontLeft, CL.zoneFrontRight)],
+    ["Rear zones", zonePair(CL.zoneRearLeft, CL.zoneRearRight),
+      latestTime(CL.zoneRearLeft, CL.zoneRearRight)],
+    ["Reported timer state", timerState,
+      Math.max(itemTime(CL.timerEnabled) || 0, CL.timerIdsCapturedAt || 0) || null],
+    ["Charge timer option available", yesNo(itemValue(CL.chargeTimerOption)),
+      itemTime(CL.chargeTimerOption)],
+    ["Charge + climate option", yesNo(itemValue(CL.chargeClimateTimerOption)),
+      itemTime(CL.chargeClimateTimerOption)],
+  ];
+  if (climateRows.some(row => row[1] != null)){
+    const climateCard = rowsCard("Climate", climateRows);
+    if (timerIds.length > 1 && itemValue(CL.timerEnabled) != null)
+      climateCard.appendChild(el("div","foot",
+        "Timer IDs are delivered without array indexes; the single reported state cannot be assigned to one specific timer."));
+  }
+
+  /* connectivity */
+  const CN = S.connectivity || {};
+  const shutdown = itemValue(CN.osShutdown);
+  const connectivityRows = [
+    ["Vehicle connected", yesNo(itemValue(CN.vehicleConnected)), itemTime(CN.vehicleConnected)],
+    ["Backend domains active", yesNo(itemValue(CN.activeDomains)), itemTime(CN.activeDomains)],
+    ["Communications unit", shutdown == null ? null
+      : String(shutdown).toLowerCase() === "true" ? "Shutting down" : "Running", itemTime(CN.osShutdown)],
+    ["V2X communication", prettyValue(itemValue(CN.v2x)), itemTime(CN.v2x)],
+    ["Connection timestamp", CN.lastConnection ? fmtDT(CN.lastConnection) : null, CN.lastConnection],
+  ];
+  if (connectivityRows.some(row => row[1] != null)) rowsCard("Connectivity", connectivityRows);
+
   /* closures */
   const cc = el("div","card"), cch = el("header"), ccg = el("div","grow");
   ccg.appendChild(el("h2",null,"Doors & closures")); cch.appendChild(ccg); cch.appendChild(prov("observed")); cc.appendChild(cch);
   const chips = el("div","chips");
-  for (const k in S.doors){ const v = S.doors[k]; if (!v) continue;
-    const open = v.toUpperCase() === "OPEN";
-    const chip = el("span","chip" + (open ? " warn" : ""));
-    chip.appendChild(el("span","dot"));
-    chip.appendChild(el("span",null, k + ": " + v.toLowerCase()));
-    chips.appendChild(chip); }
+  const closureTimes = [];
+  if (S.closures && S.closures.length){
+    for (const item of S.closures){
+      const parts = [];
+      if (item.state != null) parts.push(pretty(item.state).toLowerCase());
+      if (item.lock != null) parts.push(pretty(item.lock).toLowerCase());
+      if (item.openPct != null) parts.push(fmtN(item.openPct) + "% open");
+      if (!parts.length) continue;
+      const open = String(item.state).toUpperCase() === "OPEN" || Number(item.openPct) > 0;
+      const chip = el("span","chip" + (open ? " warn" : ""));
+      chip.appendChild(el("span","dot"));
+      chip.appendChild(el("span",null, item.label + ": " + parts.join(" · ")));
+      if (item.time){ chip.title = "Captured " + fmtFull(item.time); closureTimes.push(item.time); }
+      chips.appendChild(chip);
+    }
+  } else {
+    for (const k in S.doors){ const v = S.doors[k]; if (!v) continue;
+      const open = v.toUpperCase() === "OPEN";
+      const chip = el("span","chip" + (open ? " warn" : ""));
+      chip.appendChild(el("span","dot"));
+      chip.appendChild(el("span",null, k + ": " + v.toLowerCase()));
+      chips.appendChild(chip); }
+  }
   cc.appendChild(chips);
-  if (S.capturedAt) cc.appendChild(el("div","foot","States captured " + fmtDT(S.capturedAt) + " — export day, likely while parked/being inspected"));
+  const closureCapture = capturedLabel(closureTimes);
+  cc.appendChild(el("div","foot",(closureCapture ? closureCapture + " · " : "") +
+    "snapshot only, not a live vehicle state"));
   wrap.appendChild(cc);
   if (S.capturedAt){
     for (const c of [bc]) c.appendChild(el("div","foot","As of " + fmtDT(S.capturedAt)));

@@ -30,8 +30,9 @@ won't apply.
 
 ## What you get
 
-- **Overview** — current vehicle snapshot (SoC, range, doors, service due) and
-  headline figures: distance, consumption, energy charged, idle drain, top speed
+- **Overview** — current vehicle snapshot (SoC, range, closure and lock states,
+  window opening, lights, charging policy, climate, connectivity, service due)
+  and headline figures: distance, consumption, energy charged, idle drain, top speed
 - **Driving & charging** — distance per day (reconciled to the odometer),
   driving heatmap by weekday/hour, speed distribution, energy consumption per
   day, a charging ledger (AC / DC fast / scheduled, estimated kWh and power) and
