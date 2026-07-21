@@ -1132,11 +1132,6 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             "type": "DC fast" if kw >= 18 else ("AC" if kw >= 2.5 else "Slow / scheduled"),
         })
 
-    # tag each capacity estimate with its charging session's type
-    type_by_start = {r["start"]: r["type"] for r in charge_rows}
-    for e in cap_estimates:
-        e["type"] = type_by_start.get(e["start"])
-
     # ---- per-session charging power curves --------------------------------
     # power at the battery = charge current x pack voltage, 5-min buckets;
     # shows taper and pauses that start/end averages hide
@@ -1162,6 +1157,72 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                     pw.append((t, amp * v / 1000))
         row["powerCurve"] = round2(bucket_mean(pw, 300))
         row["peakKw"] = round(max(v for _, v in pw), 1) if pw else None
+
+    # ---- charge type from the power-curve shape ---------------------------
+    # Average power misreads tapered DC stops and boosted AC; when a curve
+    # exists, classify from peak and median plateau instead. MEB AC tops out
+    # at ~11 kW at the battery, so a 20 kW peak is a safe DC discriminator.
+    for row in charge_rows:
+        curve = row["powerCurve"]
+        if len(curve) >= 3 and row["peakKw"] is not None:
+            plateau = median([p for _, p in curve])
+            row["type"] = ("DC fast" if row["peakKw"] >= 20
+                           else "AC" if plateau >= 2.5 else "Slow / scheduled")
+            row["typeBasis"] = "power curve"
+        else:
+            row["typeBasis"] = "average power"
+
+    # tag each capacity estimate with its charging session's (final) type
+    type_by_start = {r["start"]: r["type"] for r in charge_rows}
+    for e in cap_estimates:
+        e["type"] = type_by_start.get(e["start"])
+
+    # ---- trip energy cross-check: integrate battery current x pack voltage --
+    # Second, independent estimator next to the SoC-delta method; also splits
+    # traction from regenerated energy. Scaled by current-sample coverage,
+    # reported only when coverage is solid.
+    def window_energy(a, b):
+        win = [(t, i) for t, i in current if a <= t <= b]
+        if len(win) < 5 or b <= a:
+            return None
+        e_wh = traction_wh = regen_wh = covered = 0.0
+        for (t0, i0), (t1, i1) in zip(win, win[1:]):
+            gap = t1 - t0
+            if gap > 300:
+                continue
+            v = vpack_at((t0 + t1) / 2)
+            if v is None:
+                continue
+            p = (i0 + i1) / 2 * v          # W, signed: negative = discharge
+            e_wh += p * gap / 3600
+            if p < 0:
+                traction_wh += -p * gap / 3600
+            else:
+                regen_wh += p * gap / 3600
+            covered += gap
+        frac = covered / (b - a)
+        out = {"coverage": frac}
+        if frac >= 0.7:
+            out["net"] = -e_wh / 1000 / frac
+            out["traction"] = traction_wh / 1000 / frac
+            out["regen"] = regen_wh / 1000 / frac
+        return out
+
+    for t_row in trips:
+        res = window_energy(t_row["start"], t_row["end"])
+        t_row["ivCoveragePct"] = round(res["coverage"] * 100) if res else None
+        if res and "net" in res:
+            t_row["ivKwh"] = round(res["net"], 2)
+            t_row["tractionKwh"] = round(res["traction"], 2)
+            t_row["regenKwh"] = round(res["regen"], 2)
+            t_row["ivKwh100"] = (round(res["net"] / t_row["dist"] * 100, 1)
+                                 if t_row["dist"] >= 5 and res["net"] > 0 else None)
+        else:
+            t_row["ivKwh"] = t_row["tractionKwh"] = t_row["regenKwh"] = None
+            t_row["ivKwh100"] = None
+
+    # pack voltage as its own derived series (mean cell x 96)
+    volt_pts = sorted(volt_map.items())
 
     # ---- daily energy consumption while driving ---------------------------
     # sum SoC decreases between samples < 30 min apart (car awake = driving);
@@ -1291,6 +1352,40 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             mode_names.append({"raw": m, "label": THERMAL_MODE_LABELS.get(m, m)})
         mode_pts.append((t, mode_idx[m]))
     mode_pts.sort()
+
+    # ---- coolant valve actuation (inferred enum channels) -----------------
+    # Ventil_(nicht_)angesteuert edges; reduced to state transitions so the
+    # payload stays small even with dense sampling.
+    valves = []
+    for valve_ch, valve_label in (("543814", "Coolant valve 543814"),
+                                  ("544790", "Coolant valve 544790")):
+        vpts = []
+        for r in recs:
+            if r["dataFieldName"] != valve_ch:
+                continue
+            t = parse_ts(r.get("timestampUtc"))
+            if t is None:
+                continue
+            raw = r["value"].strip()
+            state = 1 if raw == "Ventil_angesteuert" else (
+                0 if raw == "Ventil_nicht_angesteuert" else None)
+            if state is None:
+                continue
+            vpts.append((t, state))
+        vpts.sort()
+        transitions = []
+        prev_state = None
+        for t, stv in vpts:
+            if prev_state is None or stv != prev_state:
+                transitions.append([t, stv])
+                prev_state = stv
+        on = sum(1 for _, v2 in vpts if v2 == 1)
+        valves.append({
+            "channel": valve_ch, "label": valve_label, "samples": len(vpts),
+            "onPct": round(on / len(vpts) * 100, 1) if vpts else None,
+            "lastT": vpts[-1][0] if vpts else None,
+            "transitions": transitions,
+        })
 
     # ---- legacy activity sessions (kept for backwards-compatible CSVs) ----
     sessions = detect_sessions(all_ts, odo, soc, speed)
@@ -1679,6 +1774,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                     for channel, points in thermal.items()],
         "thermalSummary": thermal_summary,
         "coolantFlow": round2(bucket_mean(coolant_flow, 600)),
+        "packVoltage": round2(bucket_mean(volt_pts, 1200)),
+        "valves": valves,
         "odoDaily": [{"d": d.isoformat(), "km": round(max(vs))}
                      for d, vs in sorted(by_day.items())],
         "speedRaw": [[t, round(v, 1)] for t, v in speed],
@@ -1746,10 +1843,12 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
              [(d["d"], d["km"], d["gapKm"]) for d in daily])
         wcsv("trips.csv", ["start_utc", "end_utc", "km", "max_kmh", "soc_from", "soc_to",
                             "est_kwh_per_100km", "peak_discharge_a", "peak_regen_a", "confidence",
-                            "ambient_c"],
+                            "ambient_c", "iv_kwh", "iv_kwh_per_100km", "iv_coverage_pct",
+                            "traction_kwh", "regen_kwh"],
              [(iso(t["start"]), iso(t["end"]), t["dist"], t["vmax"], t["socFrom"], t["socTo"],
                t["kwh100"], t["peakDischargeA"], t["peakRegenA"], t["confidence"],
-               t["ambientC"]) for t in trips])
+               t["ambientC"], t["ivKwh"], t["ivKwh100"], t["ivCoveragePct"],
+               t["tractionKwh"], t["regenKwh"]) for t in trips])
         wcsv("movement_gaps.csv", ["start_utc", "end_utc", "km", "gap_hours", "confidence",
                                    "timing_evidence", "moving_speed_samples", "max_kmh_in_gap",
                                    "discharge_samples", "evidence_from_utc", "evidence_to_utc"],
@@ -1761,9 +1860,10 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         wcsv("sessions.csv", ["start_utc", "end_utc", "type", "km", "max_kmh", "soc_from", "soc_to"],
              [(iso(s["start"]), iso(s["end"]), s["kind"], s["dist"], s["vmax"],
                s["socFrom"], s["socTo"]) for s in sessions])
-        wcsv("charges.csv", ["start_utc", "end_utc", "soc_from", "soc_to", "est_kwh", "est_kw", "type"],
+        wcsv("charges.csv", ["start_utc", "end_utc", "soc_from", "soc_to", "est_kwh", "est_kw", "type",
+                             "type_basis"],
              [(iso(c["start"]), iso(c["end"]), c["socFrom"], c["socTo"], c["kwh"],
-               c["kw"], c["type"]) for c in charge_rows])
+               c["kw"], c["type"], c["typeBasis"]) for c in charge_rows])
         wcsv("consumption.csv", ["date", "km", "soc_used_pct", "kwh_per_100km", "ambient_c"],
              [(c["d"], c["km"], c["socUsed"], c["kwh100"], c["ambientC"]) for c in consumption])
         wcsv("battery_current.csv", ["timestamp_utc", "ampere"],
@@ -1779,6 +1879,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         wcsv("configuration.csv", ["timestamp_utc", "field", "value", "raw", "source", "description"],
              [(iso(c["time"]) if c["time"] else "", c["field"], c["value"], c["raw"],
                c["source"], c["description"]) for c in configuration])
+        wcsv("pack_voltage.csv", ["timestamp_utc", "volts"],
+             [(iso(t), round(v, 2)) for t, v in volt_pts])
         print(f"wrote cleaned CSVs to {csv_dir}/")
     print(f"data window: {to_local(t_min):%Y-%m-%d} .. {to_local(t_max):%Y-%m-%d} "
           f"({LOCAL_TZ_LABEL}), open the file in any browser")
@@ -2444,6 +2546,46 @@ function heatChart(viz, cfg){
   const hiT = svgEl("text",{x:lgX+38+7*(sw+2)+4, y:lgY+9}); hiT.textContent = "more"; svg.appendChild(hiT);
 }
 
+/* ---------- valve actuation timeline ---------- */
+function valveTimeline(viz, cfg){
+  viz.textContent = "";
+  const rows = cfg.rows.filter(r => r.transitions.length);
+  if (!rows.length){ viz.appendChild(el("div","sub","No valve samples in this export.")); return; }
+  const W = Math.max(320, viz.clientWidth);
+  const rowH = 34, padT = 6, padL = Math.min(170, W * 0.32), padR = 12, axH = 22;
+  const H = rows.length * rowH + padT + axH;
+  const svg = svgEl("svg",{viewBox:`0 0 ${W} ${H}`, width:W, height:H});
+  viz.appendChild(svg);
+  const x0 = padL, x1 = W - padR;
+  const t0 = cfg.t0, t1 = cfg.t1;
+  const X = t => x0 + (t - t0) / (t1 - t0 || 1) * (x1 - x0);
+  for (const [t, lbl] of timeTicks(t0, t1, Math.floor((x1-x0)/78))){
+    const tx = svgEl("text",{x:X(t), y:H-6, "text-anchor":"middle"});
+    tx.textContent = lbl; svg.appendChild(tx);
+  }
+  const tip = makeTip(viz);
+  rows.forEach((r, ri) => {
+    const cy = padT + ri*rowH + rowH/2;
+    const lb = svgEl("text",{x:x0-10, y:cy+3.5, "text-anchor":"end"});
+    lb.textContent = r.label; lb.style.fill = "var(--ink-2)"; svg.appendChild(lb);
+    svg.appendChild(svgEl("line",{class:"base", x1:x0, x2:x1, y1:cy, y2:cy}));
+    const trans = r.transitions;
+    for (let i = 0; i < trans.length; i++){
+      if (trans[i][1] !== 1) continue;
+      const segA = trans[i][0];
+      const segB = i + 1 < trans.length ? trans[i+1][0] : (r.lastT != null ? r.lastT : segA);
+      const a2 = Math.max(segA, t0), b2 = Math.min(segB, t1);
+      if (b2 <= a2) continue;
+      const bar = svgEl("rect",{class:"f1", x:X(a2).toFixed(1), y:cy-6,
+        width:Math.max(1.5, X(b2)-X(a2)).toFixed(1), height:12, rx:2});
+      bar.addEventListener("pointermove", () => tip.show(X(a2), cy-12, r.label,
+        [{value: fmtDT(segA) + " – " + fmtDT(segB)}, {value: fmtN((segB-segA)/60) + " min actuated"}]));
+      bar.addEventListener("pointerleave", () => tip.hide());
+      svg.appendChild(bar);
+    }
+  });
+}
+
 /* ---------- sparkline ---------- */
 function sparkline(parent, values){
   const W = 120, H = 28;
@@ -2762,6 +2904,13 @@ function renderKpis(){
   tile("Energy charged", chgE ? fmtN(chgE) : "—", "kWh",
        chg.length + " charge events" + (DATA.priceKwh && chgE
          ? " · ~" + DATA.currency + fmtN(chgE * DATA.priceKwh) + " at " + DATA.currency + DATA.priceKwh + "/kWh" : ""));
+  const ivTrips = drives.filter(s => s.tractionKwh != null);
+  const tracE = ivTrips.reduce((a,s) => a + s.tractionKwh, 0);
+  const regenE = ivTrips.reduce((a,s) => a + s.regenKwh, 0);
+  tile("Regen recovered", tracE > 0 ? fmtN(regenE / tracE * 100) : "—", "%",
+       tracE > 0 ? "~" + fmtN(regenE,1) + " kWh recovered of " + fmtN(tracE,1) +
+         " kWh traction (∫I·V over " + ivTrips.length + " trips)"
+       : "needs trips with battery-current coverage");
   tile("Idle drain", drainRate != null ? fmtN(drainRate, 1) : "—", "%/day",
        "SoC lost while parked ≥ 8 h (" + fmtN(drainDays) + " days observed)");
   tile("Days with driving", String(days.filter(d => d.km > 0).length), null, "of " + totDays + " days in range");
@@ -2805,6 +2954,8 @@ function makeCards(){
     head:["State","Paired samples","Median mV","P95 mV"], numCols:[1,2,3] });
   c.spreadSoc = card(batteryChartsWrap, "Cell spread by state of charge", "95th-percentile spread within each SoC band", {
     head:["SoC band","Samples","Median mV","P95 mV"], numCols:[1,2,3] }, "derived");
+  c.packV = card(batteryChartsWrap, "Pack voltage", "V, 20-min averages — mean cell voltage × 96 series cells", {
+    head:["Time","V"], numCols:[1] }, "derived");
 
   c.amb = card(thermalChartsWrap, "Ambient temperature", "°C, 30-min averages of inferred channel 180806", {
     head:["Time","°C"], numCols:[1] }, "inferred");
@@ -2814,6 +2965,9 @@ function makeCards(){
     head:["Sensor","Channel","20-min buckets","Min °C","Median °C","P95 °C","Max °C"], numCols:[2,3,4,5,6] }, "inferred");
   c.coolant = card(thermalChartsWrap, "Coolant flow", "L/min, 10-min averages of inferred channel 546697", {
     head:["Time","L/min"], numCols:[1] }, "inferred");
+  c.valves = card(thermalChartsWrap, "Coolant valve actuation",
+    "inferred channels 543814 / 544790 — periods where the valve was commanded; actuation tracks the heat-pump modes", {
+    head:["Valve","Samples","Actuated share","Transitions"], numCols:[1,3] }, "inferred");
   /* legend for the 2-series chart (toggle to isolate) */
   const lg = el("div","legend");
   const state = { max:true, min:true };
@@ -3010,6 +3164,15 @@ function renderCharts(){
   lineChart(cards.coolant.viz, { t0, t1, gapH:12, yMin:0, unitShort:" L/min", ttDec:1,
     series:[{name:"Coolant flow", cls:"s1", pts:flow}] });
   cards.coolant.setRows(flow.map(p => [fmtDT(p[0]),p[1]]));
+
+  const pv = fPts(DATA.packVoltage);
+  lineChart(cards.packV.viz, { t0, t1, gapH:12, unitShort:" V", yDec:0, ttDec:1,
+    series:[{name:"Pack voltage", cls:"s1", pts:pv}] });
+  cards.packV.setRows(pv.map(p => [fmtDT(p[0]), p[1]]));
+
+  valveTimeline(cards.valves.viz, { t0, t1, rows: DATA.valves || [] });
+  cards.valves.setRows((DATA.valves || []).map(v => [v.label, fmtN(v.samples),
+    v.onPct != null ? v.onPct + "%" : "—", fmtN(v.transitions.length)]));
 }
 
 /* ---- driving and charging ledgers ---- */
@@ -3045,7 +3208,7 @@ function renderDriveTables(){
   th.appendChild(tg); th.appendChild(prov("derived")); c.appendChild(th);
   const scroll = el("div","tableWrap"); scroll.style.marginTop = "8px";
   scroll.appendChild(buildTable(
-    ["Start","End / duration","Distance","Avg / max speed","Moving","SoC","Est. consumption","Ambient","Peak current"],
+    ["Start","End / duration","Distance","Avg / max speed","Moving","SoC","Est. consumption","∫I·V check","Ambient","Peak current"],
     trips.map(s => {
       const mins = Math.round((s.end - s.start)/60);
       const dur = mins >= 60 ? Math.floor(mins/60) + " h " + (mins%60) + " min" : mins + " min";
@@ -3057,11 +3220,14 @@ function renderDriveTables(){
         ? s.movingMin + " of " + mins + " min" : "—";
       const cons2 = s.kwh100 != null
         ? "~" + s.kwh100 + " kWh/100km" + (s.consConf === "fair" ? " (SoC samples stale)" : "") : "—";
+      const iv = s.ivKwh100 != null
+        ? "~" + s.ivKwh100 + " kWh/100km · " + s.ivCoveragePct + "% cov"
+        : (s.ivKwh != null ? "~" + s.ivKwh + " kWh · " + s.ivCoveragePct + "% cov" : "—");
       return [fmtDT(s.start), fmtT(s.end) + " · " + dur,
         fmtN(s.dist,1) + " km", spd, mov,
         (s.socFrom != null && s.socTo != null) ? s.socFrom + "% → " + s.socTo + "%" : "—",
-        cons2, s.ambientC != null ? s.ambientC + " °C" : "—", current];
-    }), [2,4,6,7]));
+        cons2, iv, s.ambientC != null ? s.ambientC + " °C" : "—", current];
+    }), [2,4,6,7,8]));
   c.appendChild(scroll);
   wrap.appendChild(c);
 

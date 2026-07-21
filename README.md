@@ -36,15 +36,17 @@ won't apply.
 - **Driving & charging** — distance per day (reconciled to the odometer),
   driving heatmap by weekday/hour, speed distribution, energy consumption per
   day with ambient temperature context, a charging ledger (AC / DC fast /
-  scheduled, estimated kWh and power), a trip ledger, and parked-drain events
-  annotated with the thermal-mode mix (conditioning vs quiet parks)
+  scheduled — classified from the power-curve shape, with estimated kWh and
+  power), a trip ledger with an independent ∫I·V consumption cross-check and
+  regen/traction split, and parked-drain events annotated with the
+  thermal-mode mix (conditioning vs quiet parks)
 - **Battery** — a plain-language **battery health verdict** (healthy / normal
   wear / worth checking) with the evidence behind it — including a
   session-by-session table of how the usable capacity was measured (SoC
   window, current coverage, AC/DC) — state of charge, highest/lowest cell
   voltage, cell imbalance over time and by SoC band, HV current
 - **Thermal** — ambient temperature, operating modes, seven thermal sensors as
-  small multiples, coolant flow
+  small multiples, coolant flow and valve-actuation timelines
 - **Backend & config** — remote actions, vehicle reports, backend errors, and a
   decoded configuration snapshot
 - **Package audit** — what VW's own Data Dictionary says exists vs. what your
