@@ -1133,9 +1133,22 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     all_ts += [t for t, _ in cell_max]
     all_ts += activity_ts
     all_ts = sorted(set(all_ts))
-    if not all_ts:
-        sys.exit("no usable diagnostic data found in export")
-    t_min, t_max = all_ts[0], all_ts[-1]
+    if not recs:
+        sys.exit("no records found in the export — is this a Data Act portal JSON?")
+    # A package with records but zero time-series content is the portal's
+    # known incomplete-delivery failure. Don't hard-fail: build a
+    # snapshot-only dashboard and tell the user to re-request and complain.
+    package_incomplete = not all_ts
+    if package_incomplete:
+        raw_times = sorted(t for t in (parse_ts(r.get("timestampUtc")) for r in recs) if t)
+        t_min = raw_times[0] if raw_times else 0
+        t_max = raw_times[-1] if raw_times else 0
+        print("WARNING: this package contains no diagnostic or charging history at all — "
+              "a known incomplete delivery by VW's portal, not a problem with the car. "
+              "Building a snapshot-only dashboard; request the export again and consider "
+              "complaining through the portal's contact form.")
+    else:
+        t_min, t_max = all_ts[0], all_ts[-1]
 
     # ---- pack capacity: measured from charging sessions when possible -----
     charge_runs = detect_charge_runs(soc)
@@ -1906,6 +1919,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     payload = {
         "vin": vin if include_identifiers else mask_identifier(vin),
         "identifiersRedacted": not include_identifiers,
+        "packageIncomplete": package_incomplete,
         "exportFile": display_export + (
             f" (+{len(export_paths) - 1} more merged)" if len(export_paths) > 1 else ""),
         "exportTime": export_time,
@@ -2198,6 +2212,7 @@ table.dv td:first-child { font-family:ui-monospace,SFMono-Regular,Consolas,monos
 .metricStrip .n { font-size:21px; font-weight:650; }
 .metricStrip .l { color:var(--muted); font-size:11px; }
 .note { border-left:3px solid var(--inferred); padding:8px 10px; color:var(--ink-2); background:color-mix(in srgb,var(--warn) 8%,transparent); font-size:12px; margin-top:10px; }
+.note.crit { border-left-color:var(--crit); background:color-mix(in srgb,var(--crit) 8%,transparent); color:var(--ink); }
 button:focus-visible, summary:focus-visible, [tabindex="0"]:focus-visible { outline:2px solid var(--s1); outline-offset:2px; }
 svg text { fill:var(--muted); font:11px "Avenir Next","Segoe UI",system-ui,sans-serif; }
 svg .grid line { stroke:var(--grid); stroke-width:1; shape-rendering:crispEdges; }
@@ -2776,12 +2791,23 @@ document.getElementById("headSub").textContent =
     notes.push(DATA.status.platform === "MEB"
       ? "Vehicle platform MEB confirmed by the export — the 96-series battery analysis applies."
       : "Vehicle platform " + DATA.status.platform + " reported — the MEB-specific battery capacity analysis may not apply to this vehicle.");
+  if (DATA.packageIncomplete){
+    wrap.appendChild(el("div","note crit",
+      "⚠ This package is nearly empty — only " + fmtN(DATA.nRecords) + " snapshot records arrived and " +
+      "none of the diagnostic or charging history the portal is supposed to deliver. That is a known " +
+      "failure of VW's export service, not a problem with your car or with this tool. Request the export " +
+      "again from the portal (complete packages often take two or more attempts) and consider complaining " +
+      "through the portal's contact form — under the EU Data Act (Arts. 4–5) and GDPR (Arts. 15/20) you " +
+      "are entitled to the full data. Everything that did arrive is shown below; the Package audit tab " +
+      "lists exactly what is missing to cite."));
+    wrap.style.marginBottom = "14px";
+  }
   const missing = [];
   if (!DATA.daily.length) missing.push("odometer / distance history");
   if (!DATA.speedRaw.length) missing.push("speed values");
   if (!DATA.cellMax.length && !DATA.cellMin.length) missing.push("cell voltages");
   if (!DATA.current.length) missing.push("battery current");
-  if (missing.length)
+  if (missing.length && !DATA.packageIncomplete)
     notes.push("Not delivered in this export: " + missing.join(", ") +
       ". The related panels are omitted rather than shown empty" +
       ((DATA.activity || []).length

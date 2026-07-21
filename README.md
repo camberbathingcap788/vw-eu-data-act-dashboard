@@ -68,7 +68,10 @@ segments bridge periods where the car wasn't reporting.
 4. Wait for the notification that the package is ready (this can take a while),
    then download it. **The download link expires after ~7 days**, so don't sit
    on it.
-5. ⚠️ **Check the file size — first attempts often come back near-empty.** In
+5. ⚠️ **Check the file size — first attempts often come back near-empty.** The
+   tool no longer refuses such packages: it builds a snapshot-only dashboard
+   from whatever arrived, flags the delivery as incomplete (it is VW's export
+   service failing, not your car), and tells you to re-request and complain. In
    practice the portal frequently delivers an incomplete package on the first
    request (a JSON of a few KB with only a handful of snapshot fields). A real
    package with diagnostic history is **tens of MB** with hundreds of
