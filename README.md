@@ -6,9 +6,9 @@ health, thermal system, backend activity, and an audit of how complete the
 package actually is.
 
 One Python script, no server, no accounts, no telemetry. The output is a single
-`dashboard.html` you open in any browser — including a plain-language
-**battery health verdict** with a *measured* usable capacity, which makes this
-tool especially useful when **buying a used VW EV** (see below).
+`dashboard.html` you open in any browser — including a plain-language battery
+assessment when the export contains battery-current and cell-voltage evidence,
+which makes this tool especially useful when **buying a used VW EV** (see below).
 
 The portal serves the **participating Volkswagen Group brands** — Volkswagen
 Passenger Cars, Volkswagen Commercial Vehicles, Audi, Škoda, SEAT, Cupra and
@@ -41,7 +41,7 @@ won't apply.
   regen/traction split, and parked-drain events annotated with the
   thermal-mode mix (conditioning vs quiet parks)
 - **Battery** — a plain-language **battery health verdict** (healthy / normal
-  wear / worth checking) with the evidence behind it — including a
+  wear / worth checking) when battery-side evidence supports one — including a
   session-by-session table of how the usable capacity was measured (SoC
   window, current coverage, AC/DC) — state of charge, highest/lowest cell
   voltage, cell imbalance over time and by SoC band, HV current
@@ -98,8 +98,9 @@ python3 build_dashboard.py
 
 That's it — open the generated `dashboard.html` in a browser. **No configuration
 is needed**: the script detects your model from the VIN, your timezone from the
-vehicle's own clock, and measures your battery's usable capacity from your
-charging sessions (falling back to sensible defaults when it can't). Everything
+vehicle's own clock, and measures usable capacity when battery-current and
+cell-voltage coverage permits it. Structured charging-only exports receive a
+labelled energy/SoC proxy instead of a fabricated SoH verdict. Everything
 it decided is printed as it runs. To be explicit instead:
 
 ```bash
@@ -112,7 +113,7 @@ python3 build_dashboard.py export.json -o dashboard.html
 |---|---|
 | `exports...` | one **or more** export JSONs — multiple files are merged and deduplicated |
 | `-o / --out` | output HTML path (default `dashboard.html` next to the export) |
-| `--csv` | also write cleaned per-series CSV files (SoC, odometer, speed, charges, trips…) |
+| `--csv` | also write cleaned per-series CSV files (SoC, odometer, charges, reporting activity, time-/SoC-based power curves, capacity evidence, monthly energy, trips…) |
 | `--price-kwh 0.21` | electricity price — adds cost estimates to the charging ledger |
 | `--currency €` | currency symbol for `--price-kwh` |
 | `--utc-offset 2` | override the auto-detected display timezone (hours from UTC) |
@@ -145,7 +146,7 @@ any owner can request their vehicle's data export from the Group's portal
    you the JSON — it costs them nothing but a few clicks and a few days' wait.
    Ask **early**: the export takes days to arrive and covers roughly the last
    two months of driving.
-2. Run this script on the file. You get an independent report:
+2. Run this script on the file. Diagnostic-channel exports can provide:
    - **Measured usable battery capacity and state of health** — measured from
      actual charging sessions, matched against the pack sizes that model
      shipped with (a pack measuring 80 kWh can only be a degraded 86 kWh pack,
@@ -160,9 +161,13 @@ any owner can request their vehicle's data export from the Group's portal
 
 The export contains no location data (verified on the export this tool was
 built against), and the dashboard redacts the VIN and account identifiers by
-default, so sellers aren't exposing anything sensitive by sharing it.
+default. It still contains detailed vehicle history, so it should be shared
+deliberately.
 
-## Battery health & measured capacity
+Structured charging-only exports still provide the observed charging ledger
+and curves, but correctly withhold an SoH verdict.
+
+## Battery health & capacity evidence
 
 The dashboard gives a direct verdict — **healthy / normal wear / worth
 checking** — built from two measurable indicators:
@@ -181,20 +186,21 @@ checking** — built from two measurable indicators:
   A healthy pack stays in the single-digit millivolts; a consistently large or
   growing spread is an early warning sign worth a service check.
 
-Merge several exports over time and the per-charge capacity measurements
-become a **degradation trend** — the number the manufacturer doesn't show you.
+When battery-current and cell-voltage history is present, merging several
+exports over time can turn repeated battery-side capacity measurements into a
+**degradation trend**. Charging-energy/SoC proxies are not suitable for this.
 
 The ∫I·V integration happens at the battery terminals, so charging overhead
 and any climate or conditioning load while plugged in never enter the figure.
-Structured-format exports carry no current channel; there the fallback is the
-vehicle's own reported session energy over the SoC gained — metered before
-charging overhead, so each session is an **optimistic upper bound**. In both
-paths, estimates exceeding the largest pack the model ever shipped with
-(plus 5% tolerance) are flagged ⚠ and excluded from the median — usable
-capacity beyond the physical pack is proof of energy that never reached the
-battery. This is a diagnostic estimate, not an official state-of-health
-certificate — treat "worth checking" as a prompt to investigate, not a
-diagnosis.
+Structured-format exports carry no battery-current or cell-voltage history.
+For those files the dashboard shows reported session energy divided by SoC
+gained as a **descriptive consistency proxy only**. The JSON does not document
+where that energy is metered, and AC/DC losses, auxiliary loads and 1% SoC
+rounding materially affect the ratio. It is not used as usable capacity or
+state of health. Ratios beyond the largest pack option are flagged as evidence
+of that uncertainty. Battery-terminal estimates remain diagnostic rather than
+official warranty certificates — treat "worth checking" as a prompt to
+investigate, not a diagnosis.
 
 ## Two export formats
 
@@ -207,14 +213,14 @@ handles both:
   reconstructed. Roughly two months of history.
 - **Structured format** (seen on a Škoda Enyaq): no numeric channels at all;
   instead documented `chargingSession.[n]` records (start/end, SoC window,
-  energy, average/peak power, AC/DC), `powerCurve` samples for recent
-  sessions, daily charged-energy aggregates — and high-volume event records
+  energy, average/peak power, AC/DC), time- and SoC-based `powerCurve` samples
+  for recent sessions, daily/monthly charged-energy aggregates — and high-volume event records
   (`speed`, `ignition`) delivered **without values**, timestamps only. Around
   eight months of history. Here the charging ledger and power curves are the
-  vehicle's own figures (labelled *observed*), usable capacity is measured
-  from reported session energy over the SoC gained, and the driving heatmap
-  is built from the value-less activity events; odometer/trip history simply
-  isn't in the package and the dashboard says so.
+  vehicle's own figures (labelled *observed*). The energy/SoC ratio is shown as
+  a proxy but does not produce an SoH verdict. A reporting-activity heatmap is
+  built from the value-less events; odometer/trip history simply isn't in the
+  package and the dashboard says so.
 
 ## Data quality notes
 

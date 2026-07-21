@@ -162,7 +162,7 @@ def estimate_pack_capacity(charge_runs, current, cell_max, cell_min):
     return estimates
 
 
-def assess_battery_health(measured_kwh, nominal_kwh, spread_stats, reported=False):
+def assess_battery_health(measured_kwh, nominal_kwh, spread_stats, capacity_proxy=None):
     """Plain-language verdict from measured capacity and cell imbalance.
     Deliberately conservative: 'attention' is a prompt to investigate, not a
     diagnosis. Returns dict for the dashboard's health card."""
@@ -184,19 +184,7 @@ def assess_battery_health(measured_kwh, nominal_kwh, spread_stats, reported=Fals
     soh = None
     if measured_kwh and nominal_kwh:
         soh = min(100, round(measured_kwh / nominal_kwh * 100))
-        if reported:
-            # energy metered before charging overhead and any climate or
-            # conditioning load — an optimistic upper bound on usable capacity
-            if soh >= 90:
-                levels.append(0)
-                reasons.append(("good", f"Vehicle-reported charging energy suggests ≈ {measured_kwh:g} kWh usable — about {soh}% of the {nominal_kwh:g} kWh nominal pack (an optimistic bound: charging overhead is included)"))
-            elif soh >= 78:
-                levels.append(1)
-                reasons.append(("fair", f"Vehicle-reported charging energy suggests ≈ {measured_kwh:g} kWh usable (~{soh}% of nominal) — normal aging, and the true figure may be somewhat lower"))
-            else:
-                levels.append(2)
-                reasons.append(("attention", f"Vehicle-reported charging energy suggests ≈ {measured_kwh:g} kWh usable (~{soh}% of nominal) — approaching the 70% warranty threshold, and reported energy tends to overestimate"))
-        elif soh >= 90:
+        if soh >= 90:
             levels.append(0)
             reasons.append(("good", f"Measured usable capacity ≈ {measured_kwh:g} kWh — about {soh}% of the {nominal_kwh:g} kWh nominal pack"))
         elif soh >= 78:
@@ -205,6 +193,18 @@ def assess_battery_health(measured_kwh, nominal_kwh, spread_stats, reported=Fals
         else:
             levels.append(2)
             reasons.append(("attention", f"Measured usable capacity ≈ {measured_kwh:g} kWh (~{soh}% of nominal) — approaching the 70% warranty threshold"))
+    elif capacity_proxy:
+        by_type = capacity_proxy.get("byType", [])
+        type_text = ""
+        if len(by_type) >= 2:
+            type_text = " (" + ", ".join(
+                f"{row['type']} median {row['medianKwh']:g} kWh" for row in by_type) + ")"
+        reasons.append((
+            "info",
+            f"Reported charging energy / SoC gained has a {capacity_proxy['medianKwh']:g} kWh "
+            f"median{type_text}, but the export does not document where energy is metered; "
+            "charging losses, auxiliaries and 1% SoC rounding mean this ratio cannot support a battery-capacity or SoH conclusion."
+        ))
     elif not measured_kwh:
         reasons.append(("info", "Capacity could not be measured (needs a ≥30% charge while the car reports current) — verdict based on cell balance only"))
 
@@ -1013,7 +1013,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     # you ever request builds an archive deeper than any single package).
     recs, seen, vin = [], set(), None
     export_paths = sorted(export_paths, key=os.path.getmtime)
-    for path in export_paths:
+    for source_i, path in enumerate(export_paths):
         with open(path) as f:
             export = json.load(f)
         vin = export.get("vin", vin)
@@ -1028,11 +1028,20 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                 continue
             value = r.get("value")
             value = "" if value is None else str(value)
-            k = (field, value, r.get("timestampUtc"), r.get("key"))
+            # Indexed structured arrays restart at [0]/[1] in every package.
+            # Keep those records source-scoped until their stable session/date
+            # identity can be reconstructed; otherwise merging exports lets a
+            # later array silently overwrite an earlier one at the same index.
+            indexed_structured = field.startswith((
+                "chargingSession.[", "powerCurve.[",
+                "aggregation.day.[", "aggregation.month.["))
+            k = (field, value, r.get("timestampUtc"), r.get("key"),
+                 source_i if indexed_structured else None)
             if k not in seen:
                 seen.add(k)
                 recs.append({"dataFieldName": field, "value": value,
-                             "timestampUtc": r.get("timestampUtc"), "key": r.get("key")})
+                             "timestampUtc": r.get("timestampUtc"), "key": r.get("key"),
+                             "_source": source_i})
                 fresh += 1
         print(f"loaded {os.path.basename(path)}: {len(data):,} records, {fresh:,} new")
     export_path = export_paths[-1]
@@ -1054,39 +1063,127 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     # ---- structured charging history (newer export schema) ----------------
     # Some exports (first seen on a Škoda Enyaq) carry no numeric diagnostic
     # channels at all; instead they deliver documented, indexed structures:
-    # chargingSession.[i].*, powerCurve.[i].timeCurve.[j].* and
-    # aggregation.day.[i].*, plus high-volume value-less event records
-    # ("speed" with only a timestamp). Parse those here — a no-op for
-    # diagnostic-format exports.
+    # chargingSession.[i].*, both powerCurve representations and daily/monthly
+    # aggregates, plus high-volume value-less event records. Parse those here
+    # — a no-op for diagnostic-format exports.
     sess_re = re.compile(r"^chargingSession\.\[(\d+)\]\.(.+)$")
     curve_re = re.compile(r"^powerCurve\.\[(\d+)\]\.timeCurve\.\[(\d+)\]\.(\w+)$")
+    soc_curve_re = re.compile(r"^powerCurve\.\[(\d+)\]\.socCurve\.\[(\d+)\]\.(\w+)$")
+    curve_id_re = re.compile(r"^powerCurve\.\[(\d+)\]\.sessionId$")
     aggday_re = re.compile(r"^aggregation\.day\.\[(\d+)\]\.(\w+)$")
+    aggmonth_re = re.compile(r"^aggregation\.month\.\[(\d+)\]\.(\w+)$")
     sessions_raw = collections.defaultdict(dict)
     curves_raw = collections.defaultdict(dict)
+    soc_curves_raw = collections.defaultdict(dict)
+    curve_session_ids = {}
     aggday_raw = collections.defaultdict(dict)
-    activity_ts = []
+    aggmonth_raw = collections.defaultdict(dict)
+    activity_by_field = collections.defaultdict(list)
     for r in recs:
         f = r["dataFieldName"]
         m = sess_re.match(f)
         if m:
-            sessions_raw[int(m.group(1))][m.group(2)] = r["value"]
+            sessions_raw[(r["_source"], int(m.group(1)))][m.group(2)] = r["value"]
             continue
         m = curve_re.match(f)
         if m:
-            curves_raw[int(m.group(1))].setdefault(int(m.group(2)), {})[m.group(3)] = r["value"]
+            curves_raw[(r["_source"], int(m.group(1)))].setdefault(
+                int(m.group(2)), {})[m.group(3)] = r["value"]
+            continue
+        m = soc_curve_re.match(f)
+        if m:
+            soc_curves_raw[(r["_source"], int(m.group(1)))].setdefault(
+                int(m.group(2)), {})[m.group(3)] = r["value"]
+            continue
+        m = curve_id_re.match(f)
+        if m:
+            curve_session_ids[(r["_source"], int(m.group(1)))] = r["value"]
             continue
         m = aggday_re.match(f)
         if m:
-            aggday_raw[int(m.group(1))][m.group(2)] = r["value"]
+            aggday_raw[(r["_source"], int(m.group(1)))][m.group(2)] = r["value"]
             continue
-        if f == "speed" and r["value"] == "":
+        m = aggmonth_re.match(f)
+        if m:
+            aggmonth_raw[(r["_source"], int(m.group(1)))][m.group(2)] = r["value"]
+            continue
+        if f in {"speed", "longTermAverageConsumption", "ignition"} and r["value"] == "":
             t = parse_ts(r.get("timestampUtc"))
             if t is not None:
-                activity_ts.append(t)
-    activity_ts.sort()
+                activity_by_field[f].append(t)
+
+    # Prefer the dense speed-event stream. The two fallbacks establish that
+    # the vehicle was reporting, but their missing values still reveal no
+    # speed, consumption or ignition state.
+    activity_source = next((f for f in ("speed", "longTermAverageConsumption", "ignition")
+                            if activity_by_field[f]), None)
+    activity_ts = sorted(set(activity_by_field.get(activity_source, [])))
+
+    # The two arrays currently use matching indices, but sessionId is the
+    # documented join key and remains correct if either array is reordered or
+    # truncated in a future export.
+    session_idx_by_id = {(i[0], s.get("sessionId")): i for i, s in sessions_raw.items()
+                         if s.get("sessionId")}
+    curves_by_session = collections.defaultdict(dict)
+    soc_curves_by_session = collections.defaultdict(dict)
+    for curve_i, points in curves_raw.items():
+        session_i = session_idx_by_id.get(
+            (curve_i[0], curve_session_ids.get(curve_i)), curve_i)
+        curves_by_session[session_i] = points
+    for curve_i, points in soc_curves_raw.items():
+        session_i = session_idx_by_id.get(
+            (curve_i[0], curve_session_ids.get(curve_i)), curve_i)
+        soc_curves_by_session[session_i] = points
+
+    # The same charging session commonly reappears in overlapping packages,
+    # sometimes at a different array index. Merge by the documented sessionId
+    # (or, when absent, its observed time/SoC window), preferring the richer
+    # curve representation. Re-key to simple integers for the analysis below.
+    canonical_sessions = {}
+    for group_i in sorted(sessions_raw):
+        sess = sessions_raw[group_i]
+        identity = (("id", sess.get("sessionId")) if sess.get("sessionId") else
+                    ("window", sess.get("startChargingTimestamp"),
+                     sess.get("stopChargingTimestamp"), sess.get("startSoc"),
+                     sess.get("endSoc")))
+        item = canonical_sessions.setdefault(identity, {
+            "session": {}, "curve": {}, "socCurve": {},
+            "curveScore": -1, "socCurveScore": -1,
+        })
+        item["session"].update({k: v for k, v in sess.items() if v != ""})
+        curve = curves_by_session.get(group_i, {})
+        curve_score = sum(len(p) for p in curve.values())
+        if curve_score >= item["curveScore"]:
+            item["curve"], item["curveScore"] = curve, curve_score
+        soc_curve = soc_curves_by_session.get(group_i, {})
+        soc_curve_score = sum(len(p) for p in soc_curve.values())
+        if soc_curve_score >= item["socCurveScore"]:
+            item["socCurve"], item["socCurveScore"] = soc_curve, soc_curve_score
+
+    sessions_raw = {}
+    curves_by_session = collections.defaultdict(dict)
+    soc_curves_by_session = collections.defaultdict(dict)
+    for i, item in enumerate(canonical_sessions.values()):
+        sessions_raw[i] = item["session"]
+        curves_by_session[i] = item["curve"]
+        soc_curves_by_session[i] = item["socCurve"]
+    curves_raw = {i: points for i, points in curves_by_session.items() if points}
+    soc_curves_raw = {i: points for i, points in soc_curves_by_session.items() if points}
+
+    def dedupe_aggregates(raw, chars):
+        by_date = {}
+        for group_i in sorted(raw):
+            entry = raw[group_i]
+            date = (entry.get("date") or "")[:chars]
+            if date:
+                by_date[date] = entry
+        return {i: entry for i, entry in enumerate(by_date.values())}
+
+    aggday_raw = dedupe_aggregates(aggday_raw, 10)
+    aggmonth_raw = dedupe_aggregates(aggmonth_raw, 7)
 
     structured_soc = []
-    for i, tc in curves_raw.items():
+    for tc in curves_by_session.values():
         for j, p in tc.items():
             t = parse_ts(p.get("timestamp"))
             v = num(p.get("soc", ""))
@@ -1099,10 +1196,12 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             v = num(sess.get(sk, ""))
             if t is not None and v is not None and 0 <= v <= 100:
                 structured_soc.append((t, v))
-    if sessions_raw or activity_ts:
+    structured_export = bool(sessions_raw or curves_raw or aggday_raw or aggmonth_raw)
+    if structured_export or activity_ts:
         print(f"structured export schema: {len(sessions_raw)} reported charging sessions, "
-              f"{len(curves_raw)} power curves, {len(aggday_raw)} daily charge aggregates, "
-              f"{len(activity_ts):,} value-less activity events")
+              f"{len(curves_raw)} power curves, {len(aggday_raw)} daily and "
+              f"{len(aggmonth_raw)} monthly charge aggregates, "
+              f"{len(activity_ts):,} value-less {activity_source or 'activity'} events")
 
     # ---- core diagnostic series (cleaned) ---------------------------------
     odo = series(recs, "180876", lo=1000, hi=500000)
@@ -1153,11 +1252,12 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     # ---- pack capacity: measured from charging sessions when possible -----
     charge_runs = detect_charge_runs(soc)
     cap_estimates = estimate_pack_capacity(charge_runs, current, cell_max, cell_min)
-    cap_source_reported = False
+    capacity_method = "integrated" if cap_estimates else None
     if not cap_estimates and sessions_raw:
-        # No battery-current channel to integrate — use the vehicle's own
-        # reported session energy over the SoC gained. Same >=30% window rule;
-        # energy resolution is 1 kWh and SoC 1%, so wide windows dominate.
+        # No battery-current channel to integrate. Keep reported session energy
+        # / SoC gained as a descriptive proxy, but never promote it to usable
+        # capacity or SoH: the export does not document the energy measurement
+        # point and AC/DC sessions show materially different ratios.
         for i in sorted(sessions_raw):
             sess = sessions_raw[i]
             a = parse_ts(sess.get("startChargingTimestamp"))
@@ -1172,52 +1272,87 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                 continue
             cap = kwh / dsoc * 100
             if 20 <= cap <= 130:
+                ctype = (sess.get("chargeType") or "").strip()
                 cap_estimates.append({
                     "start": a, "dsoc": round(dsoc),
                     "socFrom": round(sf) if sf is not None else None,
                     "socTo": round(st) if st is not None else None,
                     "hours": round((b - a) / 3600, 1),
                     "coveragePct": None,
-                    "samples": len(curves_raw.get(i, {})) or None,
-                    "kwhIn": round(kwh, 1), "capKwh": round(cap, 1)})
-        cap_source_reported = bool(cap_estimates)
+                    "samples": len(curves_by_session.get(i, {})) or None,
+                    "kwhIn": round(kwh, 1), "capKwh": round(cap, 1),
+                    "type": {"DC": "DC fast", "AC": "AC"}.get(ctype, ctype or "?")})
+        if cap_estimates:
+            capacity_method = "reported_proxy"
+
     # Physical plausibility: usable capacity can never exceed the largest pack
-    # this model shipped with. Estimates above it (plus 5% measurement
-    # tolerance) prove the session counted energy that never reached the
-    # battery — charging overhead, climate or conditioning while plugged in.
-    # They stay visible but are excluded from the median.
-    pack_max = max(pack_options_for_vin(vin))
+    # this model shipped with. For direct battery-terminal integration, reject
+    # estimates above it plus 5% tolerance. For reported-energy proxies, merely
+    # flag them: one-sided trimming would bias the already-uncertain median.
+    pack_opts = pack_options_for_vin(vin)
+    pack_max = max(pack_opts)
     for e in cap_estimates:
+        e["abovePackMax"] = e["capKwh"] > pack_max
         e["plausible"] = e["capKwh"] <= pack_max * 1.05
-    plausible_caps = [e["capKwh"] for e in cap_estimates if e["plausible"]]
-    if len(plausible_caps) < len(cap_estimates):
-        print(f"excluded {len(cap_estimates) - len(plausible_caps)} capacity estimate(s) above "
-              f"the {pack_max:g} kWh pack maximum (energy counted that never reached the battery)")
-    measured_kwh = round(median(plausible_caps), 1) if plausible_caps else None
+        e["usedForMedian"] = e["plausible"] if capacity_method == "integrated" else True
+    used_caps = [e["capKwh"] for e in cap_estimates if e["usedForMedian"]]
+    above_pack = sum(e["abovePackMax"] for e in cap_estimates)
+    excluded_caps = sum(not e["usedForMedian"] for e in cap_estimates)
+    capacity_proxy = None
+    if capacity_method == "reported_proxy":
+        by_type = []
+        for ctype in sorted({e["type"] for e in cap_estimates}):
+            values = [e["capKwh"] for e in cap_estimates if e["type"] == ctype]
+            by_type.append({"type": ctype, "sessions": len(values),
+                            "medianKwh": round(median(values), 1)})
+        capacity_proxy = {
+            "medianKwh": round(median(used_caps), 1), "sessions": len(used_caps),
+            "abovePackMax": above_pack, "byType": by_type,
+        }
+        measured_kwh = None
+        print(f"charging-energy/SoC proxy: {capacity_proxy['medianKwh']:g} kWh median "
+              f"across {len(used_caps)} sessions; not used as battery capacity or SoH"
+              + (f" ({above_pack} session(s) exceed the {pack_max:g} kWh pack maximum)"
+                 if above_pack else ""))
+    else:
+        if excluded_caps:
+            print(f"excluded {excluded_caps} capacity estimate(s) above the "
+                  f"{pack_max:g} kWh pack maximum plus 5% measurement tolerance")
+        measured_kwh = round(median(used_caps), 1) if used_caps else None
+
     global PACK_KWH_USABLE
+    if pack_kwh is not None:
+        nominal_kwh = pack_kwh
+    elif measured_kwh:
+        nominal_kwh = pick_nominal_pack(measured_kwh, pack_opts)
+    elif capacity_proxy:
+        nominal_kwh = pick_nominal_pack(capacity_proxy["medianKwh"], pack_opts)
+    else:
+        nominal_kwh = PACK_KWH_USABLE
+
     if pack_kwh is not None:
         PACK_KWH_USABLE = pack_kwh
         pack_source = "set with --pack-kwh"
     elif measured_kwh:
         PACK_KWH_USABLE = measured_kwh
-        pack_source = (f"measured from {len(plausible_caps)} vehicle-reported charging session(s)"
-                       if cap_source_reported else
-                       f"measured from {len(plausible_caps)} charging session(s)")
+        pack_source = f"measured from {len(used_caps)} battery-terminal charging session(s)"
+    elif capacity_proxy:
+        PACK_KWH_USABLE = nominal_kwh
+        pack_source = "nominal pack inferred from model and charging-energy proxy"
     else:
         pack_source = "default assumption — pass --pack-kwh to correct"
-    pack_opts = pack_options_for_vin(vin)
-    if pack_kwh is not None:
-        nominal_kwh = pack_kwh
-    elif measured_kwh:
-        nominal_kwh = pick_nominal_pack(measured_kwh, pack_opts)
-    else:
-        nominal_kwh = PACK_KWH_USABLE
+
     pack_note = None
     if measured_kwh and pack_kwh is None:
         pack_note = (f"{vehicle_title} shipped with {' / '.join(str(p) for p in pack_opts)} kWh "
                      f"usable packs — the measured capacity matches the {nominal_kwh:g} kWh pack")
+    elif capacity_proxy and pack_kwh is None:
+        pack_note = (f"{vehicle_title} shipped with {' / '.join(str(p) for p in pack_opts)} kWh "
+                     f"usable packs — the charging-energy proxy is consistent with the "
+                     f"{nominal_kwh:g} kWh variant, but cannot measure remaining capacity")
     print(f"usable pack capacity: {PACK_KWH_USABLE:g} kWh ({pack_source})"
-          + (f"; nominal {nominal_kwh:g} kWh of options {pack_opts}" if measured_kwh else ""))
+          + (f"; nominal {nominal_kwh:g} kWh of options {pack_opts}"
+             if measured_kwh or capacity_proxy else ""))
 
     # ---- distance and trip coverage ---------------------------------------
     by_day = collections.defaultdict(list)
@@ -1311,16 +1446,36 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         kwh = num(sess.get("totalEnergyCharged", ""))
         avg_kw = num(sess.get("averageChargePower", ""))
         peak_kw = num(sess.get("peakChargePower", ""))
+        active_s = num(sess.get("activeChargingTime", ""))
+        connected_at = parse_ts(sess.get("connectionTimestamp"))
+        disconnected_at = parse_ts(sess.get("disconnectionTimestamp"))
         ctype = (sess.get("chargeType") or "").strip()
+        charge_modes = []
+        for key in sorted(sess):
+            if re.match(r"^chargeMode\.\[\d+\]$", key) and sess[key] not in charge_modes:
+                charge_modes.append(sess[key])
         pcurve = []
-        for j in sorted(curves_raw.get(i, {})):
-            p = curves_raw[i][j]
+        for j in sorted(curves_by_session.get(i, {})):
+            p = curves_by_session[i][j]
             t = parse_ts(p.get("timestamp"))
             kw = num(p.get("chargePower", ""))
             if t is not None and kw is not None:
                 pcurve.append((t, kw))
+        soc_curve = []
+        for j in sorted(soc_curves_by_session.get(i, {})):
+            p = soc_curves_by_session[i][j]
+            sv = num(p.get("soc", ""))
+            kw = num(p.get("chargePower", ""))
+            if sv is not None and kw is not None and 0 <= sv <= 100:
+                soc_curve.append((sv, kw))
         structured_sessions.append({
             "start": a, "end": b,
+            "connection": connected_at, "disconnection": disconnected_at,
+            "elapsedMin": round((b - a) / 60, 1),
+            "activeMin": round(active_s / 60, 1) if active_s is not None else None,
+            "connectedMin": (round((disconnected_at - connected_at) / 60, 1)
+                             if connected_at is not None and disconnected_at is not None
+                             and disconnected_at >= connected_at else None),
             "socFrom": round(sf) if sf is not None else None,
             "socTo": round(st) if st is not None else None,
             "kwh": round(kwh, 1) if kwh is not None else None,
@@ -1329,7 +1484,9 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             "confidence": "observed",
             "type": {"DC": "DC fast", "AC": "AC"}.get(ctype, ctype or "?"),
             "typeBasis": "reported",
+            "chargeModes": charge_modes,
             "powerCurve": round2(bucket_mean(pcurve, 300)) if pcurve else [],
+            "socPowerCurve": round2(soc_curve),
         })
     if structured_sessions:
         structured_sessions.sort(key=lambda x: x["start"])
@@ -1338,7 +1495,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     # tag each capacity estimate with its charging session's (final) type
     type_by_start = {r["start"]: r["type"] for r in charge_rows}
     for e in cap_estimates:
-        e["type"] = type_by_start.get(e["start"])
+        e["type"] = type_by_start.get(e["start"], e.get("type"))
 
     # ---- trip energy cross-check: integrate battery current x pack voltage --
     # Second, independent estimator next to the SoC-delta method; also splits
@@ -1447,7 +1604,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
 
     # ---- battery health verdict -------------------------------------------
     health = assess_battery_health(measured_kwh, nominal_kwh, spread_stats,
-                                   reported=cap_source_reported)
+                                   capacity_proxy=capacity_proxy)
     verdict_txt = {"good": "looks healthy", "fair": "shows normal wear",
                    "attention": "worth checking", "unknown": "not enough data"}[health["verdict"]]
     print(f"battery health: {verdict_txt}"
@@ -1551,8 +1708,11 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             "transitions": transitions,
         })
 
-    # ---- legacy activity sessions (kept for backwards-compatible CSVs) ----
-    sessions = detect_sessions(all_ts, odo, soc, speed)
+    # ---- legacy activity sessions (kept for diagnostic-format CSVs) -------
+    # Value-less structured events are reporting evidence, not trip or charge
+    # state. Do not turn them into authoritative-looking pseudo-sessions.
+    sessions = ([] if structured_export and not odo and not speed
+                else detect_sessions(all_ts, odo, soc, speed))
 
     # ---- latest snapshot values -------------------------------------------
     counts = collections.Counter(r["dataFieldName"] for r in recs)
@@ -1765,10 +1925,13 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
 
     dictionary_info = dict(BUNDLED_DICTIONARY_INFO)
 
-    def field_description(f):
-        return BUNDLED_FIELD_DESCRIPTIONS.get(re.sub(r"\.\[\d+\]\.", ".[*].", f), "")
+    def normalize_field_name(f):
+        return re.sub(r"\.\[\d+\]", ".[*]", f)
 
-    inventory = []
+    def field_description(f):
+        return BUNDLED_FIELD_DESCRIPTIONS.get(normalize_field_name(f), "")
+
+    raw_inventory = []
     for f, n in counts.most_common():
         if f in DIAG_LABELS:
             label, unit, note = DIAG_LABELS[f]
@@ -1777,7 +1940,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         else:
             d = field_description(f)
         fl = first_last.get(f)
-        inventory.append({
+        raw_inventory.append({
             "field": f, "n": n, "desc": d[:220], "sample": sample[f],
             "first": fl[0] if fl else None, "last": fl[1] if fl else None,
         })
@@ -1790,7 +1953,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         "timer is enabled", "functionality is on or off",
     )
     configuration = []
-    for item in inventory:
+    for item in raw_inventory:
         f, desc = item["field"], item["desc"]
         if is_sensitive_field(f):
             continue
@@ -1804,6 +1967,29 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             "source": "factory default" if raw == "factory setting is used" else "explicit",
         })
     configuration.sort(key=lambda x: ((x["time"] or 0), x["field"]), reverse=True)
+
+    # Array indices turn a compact structured schema into thousands of
+    # apparent fields. Group those paths while retaining record totals, raw
+    # field counts and one concrete example for discoverability.
+    inventory_groups = {}
+    for item in raw_inventory:
+        normalized = normalize_field_name(item["field"])
+        group = inventory_groups.setdefault(normalized, {
+            "field": normalized, "n": 0, "variants": 0,
+            "desc": item["desc"], "sample": item["sample"],
+            "example": item["field"], "first": None, "last": None,
+        })
+        group["n"] += item["n"]
+        group["variants"] += 1
+        if not group["sample"] and item["sample"]:
+            group["sample"] = item["sample"]
+        if item["first"] is not None:
+            group["first"] = (item["first"] if group["first"] is None
+                              else min(group["first"], item["first"]))
+        if item["last"] is not None:
+            group["last"] = (item["last"] if group["last"] is None
+                             else max(group["last"], item["last"]))
+    inventory = sorted(inventory_groups.values(), key=lambda item: (-item["n"], item["field"]))
 
     # ---- remote actions, reports and errors -------------------------------
     cause_at = collections.defaultdict(set)   # several causes can share a timestamp
@@ -1916,19 +2102,23 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     display_export = os.path.basename(export_path)
     if not include_identifiers and vin:
         display_export = display_export.replace(vin, mask_identifier(vin))
+    soc_source = ("mixed" if soc_raw and structured_soc else
+                  "structured_charging" if structured_soc else "diagnostic")
     payload = {
         "vin": vin if include_identifiers else mask_identifier(vin),
         "identifiersRedacted": not include_identifiers,
         "packageIncomplete": package_incomplete,
+        "structuredExport": structured_export,
         "exportFile": display_export + (
             f" (+{len(export_paths) - 1} more merged)" if len(export_paths) > 1 else ""),
         "exportTime": export_time,
         "tzOffsetH": LOCAL_UTC_OFFSET_H,
         "tzLabel": LOCAL_TZ_LABEL,
         "tMin": t_min, "tMax": t_max,
-        "nRecords": len(recs), "nFields": len(counts),
+        "nRecords": len(recs), "nFields": len(counts), "nFieldPatterns": len(inventory),
         "daily": daily,
         "soc": round2(soc),
+        "socSource": soc_source,
         "ambient": round2(bucket_mean(ambient, 1800)),
         "cellMax": round2(bucket_mean(cell_max, 1200)),
         "cellMin": round2(bucket_mean(cell_min, 1200)),
@@ -1949,7 +2139,16 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                                 if (e.get("date") or "").split("T")[0]
                                 and num(e.get("chargedEnergy", "")) is not None),
                                key=lambda x: x["d"]),
+        "chargedMonthly": sorted(({"d": (e.get("date") or "")[:7],
+                                    "kwh": round(num(e.get("chargedEnergy", "")), 1)}
+                                   for e in aggmonth_raw.values()
+                                   if len(e.get("date") or "") >= 7
+                                   and num(e.get("chargedEnergy", "")) is not None),
+                                  key=lambda x: x["d"]),
         "activity": [[t] for t in activity_ts],
+        "activitySource": activity_source,
+        "activityEventCounts": {f: len(activity_by_field.get(f, []))
+                                for f in ("speed", "longTermAverageConsumption", "ignition")},
         "speedRaw": [[t, round(v, 1)] for t, v in speed],
         "modeNames": mode_names,
         "modeRaw": [[t, i] for t, i in mode_pts],
@@ -1964,6 +2163,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         "drainPairs": drain_pairs,
         "packKwh": PACK_KWH_USABLE,
         "packSource": pack_source,
+        "capacityMethod": capacity_method,
+        "capacityProxy": capacity_proxy,
         "measuredKwh": measured_kwh,
         "nominalKwh": nominal_kwh,
         "capEstimates": cap_estimates,
@@ -2004,7 +2205,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
                 w.writerows(rows)
 
         iso = lambda t: dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat()
-        wcsv("soc.csv", ["timestamp_utc", "soc_pct"], [(iso(t), v) for t, v in soc])
+        wcsv("soc.csv", ["timestamp_utc", "soc_pct", "source"],
+             [(iso(t), v, soc_source) for t, v in soc])
         wcsv("odometer.csv", ["timestamp_utc", "km"], [(iso(t), v) for t, v in odo])
         wcsv("ambient_temp.csv", ["timestamp_utc", "deg_c"],
              [(iso(t), round(v, 2)) for t, v in ambient])
@@ -2033,9 +2235,22 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
              [(iso(s["start"]), iso(s["end"]), s["kind"], s["dist"], s["vmax"],
                s["socFrom"], s["socTo"]) for s in sessions])
         wcsv("charges.csv", ["start_utc", "end_utc", "soc_from", "soc_to", "est_kwh", "est_kw", "type",
-                             "type_basis"],
+                             "type_basis", "connection_utc", "disconnection_utc",
+                             "elapsed_minutes", "active_minutes", "connected_minutes", "charge_modes",
+                             "peak_kw"],
              [(iso(c["start"]), iso(c["end"]), c["socFrom"], c["socTo"], c["kwh"],
-               c["kw"], c["type"], c["typeBasis"]) for c in charge_rows])
+               c["kw"], c["type"], c["typeBasis"],
+               iso(c["connection"]) if c.get("connection") is not None else "",
+               iso(c["disconnection"]) if c.get("disconnection") is not None else "",
+               c.get("elapsedMin", ""), c.get("activeMin", ""), c.get("connectedMin", ""),
+               " | ".join(c.get("chargeModes", [])), c.get("peakKw", "")) for c in charge_rows])
+        wcsv("charge_power_over_time.csv",
+             ["session_start_utc", "type", "timestamp_utc", "charge_kw"],
+             [(iso(c["start"]), c["type"], iso(t), kw)
+              for c in charge_rows for t, kw in c.get("powerCurve", [])])
+        wcsv("charge_power_by_soc.csv", ["session_start_utc", "type", "soc_pct", "charge_kw"],
+             [(iso(c["start"]), c["type"], soc_value, kw)
+              for c in charge_rows for soc_value, kw in c.get("socPowerCurve", [])])
         wcsv("consumption.csv", ["date", "km", "soc_used_pct", "kwh_per_100km", "ambient_c"],
              [(c["d"], c["km"], c["socUsed"], c["kwh100"], c["ambientC"]) for c in consumption])
         wcsv("battery_current.csv", ["timestamp_utc", "ampere"],
@@ -2048,6 +2263,8 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
         wcsv("activity_events.csv", ["timestamp_utc", "kind", "event", "detail", "confidence"],
              [(iso(e["time"]) if e["time"] else "", e["kind"], e["event"], e["detail"], e["confidence"])
               for e in events])
+        wcsv("reporting_activity.csv", ["timestamp_utc", "source"],
+             [(iso(t), activity_source or "") for t in activity_ts])
         wcsv("configuration.csv", ["timestamp_utc", "field", "value", "raw", "source", "description"],
              [(iso(c["time"]) if c["time"] else "", c["field"], c["value"], c["raw"],
                c["source"], c["description"]) for c in configuration])
@@ -2055,6 +2272,18 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
              [(iso(t), round(v, 2)) for t, v in volt_pts])
         wcsv("charged_daily.csv", ["date", "charged_kwh"],
              [(e["d"], e["kwh"]) for e in payload["chargedDaily"]])
+        wcsv("charged_monthly.csv", ["month", "charged_kwh"],
+             [(e["d"], e["kwh"]) for e in payload["chargedMonthly"]])
+        wcsv("capacity_estimates.csv",
+             ["charge_start_utc", "type", "method", "soc_from", "soc_to",
+              "delta_soc_pct", "duration_hours", "energy_in_kwh", "current_coverage_pct",
+              "samples", "energy_per_soc_gained_kwh", "above_pack_max", "plausible",
+              "used_for_median"],
+             [(iso(e["start"]), e.get("type", ""), capacity_method or "",
+               e.get("socFrom", ""), e.get("socTo", ""), e.get("dsoc", ""),
+               e.get("hours", ""), e.get("kwhIn", ""), e.get("coveragePct", ""),
+               e.get("samples", ""), e.get("capKwh", ""), e.get("abovePackMax", ""),
+               e.get("plausible", ""), e.get("usedForMedian", "")) for e in cap_estimates])
         print(f"wrote cleaned CSVs to {csv_dir}/")
     print(f"data window: {to_local(t_min):%Y-%m-%d} .. {to_local(t_max):%Y-%m-%d} "
           f"({LOCAL_TZ_LABEL}), open the file in any browser")
@@ -2500,7 +2729,8 @@ function lineChart(viz, cfg){
   }
   svg.appendChild(grid);
   svg.appendChild(svgEl("line",{class:"base",x1:x0,x2:x1,y1:y0,y2:y0}));
-  for (const [t, lbl] of timeTicks(t0,t1,Math.floor((x1-x0)/78))){
+  const xTicks = cfg.xTicks || timeTicks(t0,t1,Math.floor((x1-x0)/78));
+  for (const [t, lbl] of xTicks){
     const tx = svgEl("text",{x:X(t),y:H-8,"text-anchor":"middle"});
     tx.textContent = lbl; svg.appendChild(tx);
   }
@@ -2564,7 +2794,8 @@ function lineChart(viz, cfg){
         value:fmtN(best[1], cfg.ttDec != null ? cfg.ttDec : (cfg.yDec||0)) + (cfg.unitShort||""),
         name:s.name });
     }
-    tip.show(px, Y(hi)+30, fmtDT(t) + (rows.length?"":" — no data"), rows);
+    const tipTitle = cfg.xTip ? cfg.xTip(t) : fmtDT(t);
+    tip.show(px, Y(hi)+30, tipTitle + (rows.length?"":" — no data"), rows);
   }
   function nearest(t){
     let lo2 = 0, hi2 = xs.length-1;
@@ -3085,8 +3316,13 @@ function renderKpis(){
     hv.appendChild(el("span","hdot " + (DATA.health.verdict || "unknown")));
     hv.appendChild(document.createTextNode(KPI_HEALTH[DATA.health.verdict] || "Unknown"));
     hc.appendChild(hv);
+    const capContext = DATA.measuredKwh
+      ? "≈" + DATA.measuredKwh + " kWh usable measured"
+      : DATA.capacityProxy
+        ? "≈" + DATA.capacityProxy.medianKwh + " kWh charging-energy proxy · SoH unavailable"
+        : "capacity not measurable";
     hc.appendChild(el("div","ctx",
-      (DATA.measuredKwh ? "≈" + DATA.measuredKwh + " kWh usable measured" : "capacity not measurable") +
+      capContext +
       (DATA.spreadStats && DATA.spreadStats.median != null ? " · " + DATA.spreadStats.median + " mV cell imbalance" : "") +
       " — details on the Battery tab"));
     wrap.appendChild(hc);
@@ -3132,8 +3368,10 @@ function makeCards(){
   const c = {};
   c.daily = card(driveChartsWrap, "Distance added to odometer", "Daily allocation reconciles to the full odometer delta; hatched context is listed in the table as sampling-gap km", {
     head:["Date","km","Across gaps"], numCols:[1,2] }, "derived");
-  c.heat = card(driveChartsWrap, "When the car is driven",
-    (DATA.speedRaw.length ? "Speed samples" : "Vehicle reporting events (sample values withheld by the export)") +
+  c.heat = card(driveChartsWrap,
+    DATA.speedRaw.length ? "When the car is driven" : "When the vehicle was reporting",
+    (DATA.speedRaw.length ? "Speed samples" : "Timestamp-only " + (DATA.activitySource || "activity") +
+      " records; values were withheld, so these are not confirmed trips") +
     " by weekday and hour, " + DATA.tzLabel, {
     head:["Day", ...Array.from({length:24},(_,h)=>String(h))], numCols:Array.from({length:24},(_,h)=>h+1) }, "derived");
   c.hist = card(driveChartsWrap, "Speed distribution", "Share of observed moving samples; irregular sampling means this is not exact time share", {
@@ -3144,17 +3382,33 @@ function makeCards(){
       : "battery-side charge power per session, 5-min averages — taper and pauses become visible"), {
     head:["Start","Type","SoC","Peak kW","Curve points"], numCols:[3,4] });
   c.chgCurves.root.style.gridColumn = "1 / -1";
+  c.chgSocCurves = card(driveChartsWrap, "Charging power by state of charge",
+    "vehicle-reported power against SoC for sessions that include an SoC curve", {
+    head:["Start","Type","SoC range","Peak kW","Curve points"], numCols:[3,4] }, "observed");
+  c.chgSocCurves.root.style.gridColumn = "1 / -1";
   if (DATA.chargedDaily && DATA.chargedDaily.length){
     c.chgDaily = card(driveChartsWrap, "Energy charged per day",
       "kWh per day from the vehicle's own daily aggregation", {
       head:["Date","kWh"], numCols:[1] }, "observed");
   }
+  if (DATA.chargedMonthly && DATA.chargedMonthly.length){
+    c.chgMonthly = card(driveChartsWrap, "Energy charged per month",
+      "kWh per month from the vehicle's own monthly aggregation", {
+      head:["Month","kWh"], numCols:[1] }, "observed");
+  }
   c.cons = card(driveChartsWrap, "Energy consumption per day",
     "kWh/100km from SoC drop while driving, using the " + PACK_SHORT + " " + DATA.packKwh + " kWh usable capacity — days with ≥20 km", {
     head:["Date","km","SoC used","kWh/100km","Ambient"], numCols:[1,2,3,4] }, "derived");
 
-  c.soc = card(batteryChartsWrap, "Battery state of charge", "%, diagnostic channel 180886 — sampled only while the car is awake", {
-    head:["Time (" + DATA.tzLabel + ")","SoC %"], numCols:[1] }, "inferred");
+  const socStructured = DATA.socSource === "structured_charging";
+  const socMixed = DATA.socSource === "mixed";
+  c.soc = card(batteryChartsWrap, "Battery state of charge",
+    socStructured
+      ? "%, observed only at charging-session boundaries and in recent charging curves; not continuous driving history"
+      : socMixed
+        ? "%, combined diagnostic samples and observed charging-session values"
+        : "%, inferred diagnostic channel 180886 — sampled only while the car is awake", {
+    head:["Time (" + DATA.tzLabel + ")","SoC %"], numCols:[1] }, socStructured ? "observed" : "inferred");
   c.cells = card(batteryChartsWrap, "Highest vs lowest cell voltage", "mV, 20-min averages of undocumented channels 543765 / 545776", {
     head:["Time","Highest mV","Lowest mV"], numCols:[1,2] }, "inferred");
   c.spread = card(batteryChartsWrap, "Battery cell imbalance",
@@ -3209,7 +3463,8 @@ function makeCards(){
      so the renderers can keep drawing into the detached nodes harmlessly. */
   const present = {
     daily: DATA.daily.length, heat: DATA.speedRaw.length || (DATA.activity || []).length,
-    hist: DATA.speedRaw.length, chgCurves: DATA.charges.length,
+    hist: DATA.speedRaw.length, chgCurves: DATA.charges.some(c => c.powerCurve && c.powerCurve.length),
+    chgSocCurves: DATA.charges.some(c => c.socPowerCurve && c.socPowerCurve.length),
     cons: DATA.consumption.length,
     soc: DATA.soc.length, cells: DATA.cellMax.length || DATA.cellMin.length,
     spread: DATA.spread.length, current: DATA.current.length,
@@ -3261,7 +3516,8 @@ function renderCharts(){
   const spd = fPts(DATA.speedRaw.length ? DATA.speedRaw : (DATA.activity || []));
   const grid = Array.from({length:7}, () => Array(24).fill(0));
   for (const [t] of spd){ const d = loc(t); grid[(d.getUTCDay()+6)%7][d.getUTCHours()]++; }
-  heatChart(cards.heat.viz, { grid, unitName:"speed samples" });
+  heatChart(cards.heat.viz, { grid,
+    unitName:DATA.speedRaw.length ? "speed samples" : "reporting events" });
   cards.heat.setRows(grid.map((row,d) => [DOW[d], ...row]));
 
   const moving = spd.filter(p => p[1] > 0.5).map(p => p[1]);
@@ -3293,6 +3549,18 @@ function renderCharts(){
       items: cd.map(d => ({ label:fmtD(dayKeyToT(d.d) + 43200), v:d.kwh, tipWhen:d.d })),
       unitShort:" kWh", valName:"charged" });
     cards.chgDaily.setRows(cd.map(d => [d.d, d.kwh]));
+  }
+  if (cards.chgMonthly){
+    const cm = DATA.chargedMonthly.filter(d => {
+      const start = dayKeyToT(d.d + "-01");
+      const md = new Date((start + OFF) * 1000);
+      const next = Date.UTC(md.getUTCFullYear(), md.getUTCMonth()+1, 1) / 1000 - OFF;
+      return start <= range[1] && next >= range[0];
+    });
+    colChart(cards.chgMonthly.viz, {
+      items: cm.map(d => ({ label:d.d, v:d.kwh, tipWhen:d.d })),
+      unitShort:" kWh", valName:"charged" });
+    cards.chgMonthly.setRows(cm.map(d => [d.d, d.kwh]));
   }
 
   /* per-day consumption */
@@ -3365,9 +3633,37 @@ function renderCharts(){
       yMin:0, yMax:pHi * 1.08, unitShort:" kW", ttDec:1,
       series:[{name:"Charge power", cls:"s1", pts:cc.powerCurve}] }));
     if (!chgSess.length)
-      viz.appendChild(el("div","sub","No charging sessions with battery-current samples in this range — the car was asleep while charging."));
+      viz.appendChild(el("div","sub","No detailed time-based charging curve is available in this range."));
     cards.chgCurves.setRows(chgSess.map(cc => [fmtDT(cc.start), cc.type,
       cc.socFrom + "% → " + cc.socTo + "%", cc.peakKw != null ? cc.peakKw : "—", cc.powerCurve.length]));
+  }
+
+  /* charging power against SoC — the export's separate SoC-curve view */
+  {
+    const viz = cards.chgSocCurves.viz; viz.textContent = "";
+    const grid = el("div","facets"); viz.appendChild(grid);
+    const sessions = DATA.charges.filter(cc => inR(cc.start) && cc.socPowerCurve && cc.socPowerCurve.length >= 4);
+    const pHi = Math.max(1, ...sessions.flatMap(cc => cc.socPowerCurve.map(p => p[1])));
+    const facets = sessions.map(cc => {
+      const f = el("div","facet");
+      f.appendChild(el("div","flabel",fmtDT(cc.start) + " · " + cc.type));
+      const v = el("div","viz"); f.appendChild(v); grid.appendChild(f); return v;
+    });
+    sessions.forEach((cc, i) => {
+      const pts = cc.socPowerCurve.slice().sort((a,b) => a[0]-b[0]);
+      const lo = Math.max(0, Math.floor(pts[0][0] / 10) * 10);
+      const hi = Math.min(100, Math.ceil(pts[pts.length-1][0] / 10) * 10);
+      const ticks = []; for (let s=lo; s<=hi; s+=10) ticks.push([s, s + "%"]);
+      lineChart(facets[i], {t0:lo, t1:hi, h:120, yTickN:2, padR:40,
+        yMin:0, yMax:pHi*1.08, unitShort:" kW", ttDec:1,
+        xTicks:ticks, xTip:s => "SoC " + fmtN(s) + "%",
+        series:[{name:"Charge power", cls:"s1", pts}]});
+    });
+    cards.chgSocCurves.setRows(sessions.map(cc => {
+      const pts=cc.socPowerCurve;
+      return [fmtDT(cc.start),cc.type,pts[0][0]+"% → "+pts[pts.length-1][0]+"%",
+        Math.max(...pts.map(p=>p[1])),pts.length];
+    }));
   }
 
   /* thermal traces — small multiples, one facet per sensor, shared y scale */
@@ -3429,18 +3725,30 @@ function renderDriveTables(){
   cch.appendChild(ccg); cch.appendChild(prov(chgReported ? "observed" : "derived")); cc.appendChild(cch);
   const cs = el("div","tableWrap"); cs.style.marginTop = "8px";
   const withCost = DATA.priceKwh != null;
+  const fmtMinutes = value => {
+    if (value == null) return "—";
+    const mins = Math.round(value);
+    return mins >= 60 ? Math.floor(mins/60) + " h " + (mins%60) + " min" : mins + " min";
+  };
   cs.appendChild(buildTable(
-    ["Start","End","SoC","Energy","Avg power","Type"].concat(withCost ? ["Est. cost"] : []),
+    ["Start","End","SoC","Energy","Avg power","Type","Elapsed / active","Plugged in","Mode"]
+      .concat(withCost ? ["Est. cost"] : []),
     chg.map(c => {
-      const mins = Math.round((c.end - c.start)/60);
-      const dur = mins >= 60 ? Math.floor(mins/60) + " h " + (mins%60) + " min" : mins + " min";
-      const row = [fmtDT(c.start), fmtT(c.end) + " (" + dur + ")",
+      const elapsed = c.elapsedMin != null ? c.elapsedMin : (c.end-c.start)/60;
+      const elapsedActive = fmtMinutes(elapsed) +
+        (c.activeMin != null ? " / " + fmtMinutes(c.activeMin) : "");
+      const row = [fmtDT(c.start), fmtT(c.end),
         c.socFrom + "% → " + c.socTo + "%",
-        "~" + fmtN(c.kwh,1) + " kWh", "~" + fmtN(c.kw,1) + " kW", c.type];
+        "~" + fmtN(c.kwh,1) + " kWh", "~" + fmtN(c.kw,1) + " kW", c.type,
+        elapsedActive, fmtMinutes(c.connectedMin),
+        (c.chargeModes || []).map(pretty).join(", ") || "—"];
       if (withCost) row.push("~" + DATA.currency + fmtN(c.kwh * DATA.priceKwh, 2));
       return row;
-    }), withCost ? [3,4,6] : [3,4]));
+    }), withCost ? [3,4,6,7,8,9] : [3,4,6,7,8]));
   cc.appendChild(cs);
+  if (chgReported) cc.appendChild(el("div","foot",
+    "Elapsed is charging start to stop; active excludes pauses; plugged-in time uses connection to disconnection. " +
+    "Average power is the vehicle's reported figure and may be based on active time."));
   if (DATA.charges.length) wrap.appendChild(cc);
 
   const trips = DATA.trips.filter(s => inR(s.start)).slice().reverse();
@@ -3593,9 +3901,9 @@ function renderEvidence(){
 (function(){
   const wrap = document.querySelector("#invWrap .tableWrap");
   wrap.appendChild(buildTable(
-    ["Field","Records","Description","Sample value","First","Last"],
-    DATA.inventory.map(f => [f.field, fmtN(f.n), f.desc || "", f.sample,
-      f.first ? fmtD(f.first) : "", f.last ? fmtD(f.last) : ""]), [1]));
+    ["Field / indexed pattern","Raw fields","Records","Description","Sample value","Example raw field","First","Last"],
+    DATA.inventory.map(f => [f.field, fmtN(f.variants || 1), fmtN(f.n), f.desc || "", f.sample,
+      f.example !== f.field ? f.example : "", f.first ? fmtD(f.first) : "", f.last ? fmtD(f.last) : ""]), [1,2]));
 })();
 
 document.getElementById("pageFoot").textContent =
@@ -3612,7 +3920,8 @@ const HEALTH_LABEL = {
   const wrap = document.getElementById("healthCards");
   const c = el("div","card");
   const head = el("header"), g = el("div","grow");
-  g.appendChild(el("h2",null,"Battery health"));
+  const proxyMode = DATA.capacityMethod === "reported_proxy";
+  g.appendChild(el("h2",null,proxyMode ? "Battery evidence" : "Battery health"));
   head.appendChild(g); head.appendChild(prov("derived")); c.appendChild(head);
   const badge = el("div","healthBadge");
   const dot = el("span","hdot " + (H.verdict || "unknown"));
@@ -3625,7 +3934,7 @@ const HEALTH_LABEL = {
   if (DATA.packNote) c.appendChild(el("div","foot", DATA.packNote + "."));
   if (DATA.capEstimates && DATA.capEstimates.length){
     const reportedCaps = DATA.capEstimates.every(e => e.coveragePct == null);
-    const excluded = DATA.capEstimates.filter(e => e.plausible === false).length;
+    const excluded = DATA.capEstimates.filter(e => e.usedForMedian === false).length;
     const tw = el("div","tableWrap"); tw.style.marginTop = "10px";
     tw.appendChild(buildTable(
       ["Charge start","Type","SoC window","Duration","Energy in","Current coverage","Samples",
@@ -3634,18 +3943,32 @@ const HEALTH_LABEL = {
         e.socFrom + "% → " + e.socTo + "%", e.hours + " h", "~" + e.kwhIn + " kWh",
         e.coveragePct != null ? e.coveragePct + "%" : "—",
         e.samples != null ? fmtN(e.samples) : "—",
-        e.capKwh + " kWh" + (e.plausible === false ? " ⚠" : "")]), [3,4,5,6,7]));
+        e.capKwh + " kWh" + (e.abovePackMax || e.plausible === false ? " ⚠" : "")]), [3,4,5,6,7]));
     c.appendChild(tw);
-    c.appendChild(el("div","foot",(reportedCaps
-      ? "How capacity was estimated: the vehicle's own reported session energy divided by the SoC gained. That energy is metered before charging overhead and before any climate or battery conditioning that ran while plugged in, so each session is an optimistic upper bound; energy resolution is 1 kWh and SoC 1%, so individual sessions also scatter. "
-      : "How capacity was measured: battery current × pack voltage integrated over each charging session, divided by the SoC gained — measured at the battery terminals, so charging overhead and any climate or conditioning load while plugged in never enter the figure. ") +
-      (excluded ? "⚠ " + excluded + " session(s) exceed the largest pack this model shipped with — proof of energy that never reached the battery — and are excluded from the median. " : "") +
-      "The median (" + DATA.measuredKwh + " kWh) drives all energy figures" +
-      (reportedCaps ? ". " : "; wider SoC windows and fuller current coverage make an estimate more reliable. ") +
-      "More merged exports sharpen this and reveal degradation trends."));
+    if (reportedCaps){
+      const typeText = DATA.capacityProxy.byType.map(r =>
+        r.type + " " + r.medianKwh + " kWh median (" + r.sessions + " sessions)").join("; ");
+      c.appendChild(el("div","foot",
+        "This table divides the vehicle's reported session energy by SoC gained. The JSON does not document " +
+        "where that energy is metered, and charging losses, auxiliaries and 1% SoC rounding affect the ratio. " +
+        typeText + ". " + (DATA.capacityProxy.abovePackMax
+          ? "⚠ " + DATA.capacityProxy.abovePackMax + " session(s) even exceed the largest pack option, demonstrating the uncertainty. "
+          : "") + "The descriptive median is " + DATA.capacityProxy.medianKwh +
+        " kWh; it is not used as battery capacity or state of health."));
+    } else {
+      c.appendChild(el("div","foot",
+        "How capacity was measured: battery current × pack voltage integrated over each charging session, " +
+        "divided by the SoC gained — measured at the battery terminals. " +
+        (excluded ? "⚠ " + excluded + " physically implausible session(s) are excluded. " : "") +
+        "The median (" + DATA.measuredKwh + " kWh) drives derived energy figures; wider SoC windows and fuller " +
+        "current coverage make an estimate more reliable."));
+    }
   }
-  c.appendChild(el("div","foot",
-    "Diagnostic estimate from charging sessions and cell voltages — not an official state-of-health measurement."));
+  c.appendChild(el("div","foot",proxyMode
+    ? (DATA.spreadStats
+      ? "The reported-energy ratio is not part of the verdict above; that verdict relies on cell-balance evidence only."
+      : "This export contains no battery-current or cell-voltage history, so it cannot support a battery-health verdict.")
+    : "Diagnostic estimate from charging sessions and cell voltages — not an official state-of-health measurement."));
   wrap.appendChild(c);
 })();
 
@@ -3713,7 +4036,9 @@ if (!DATA.trips.length && DATA.charges.length){
 }
 if (!DATA.cellMax.length && DATA.capEstimates.length){
   const p = document.querySelector("#panel-battery .sectionHead p");
-  if (p) p.textContent = "Capacity here is measured from the vehicle's own reported charging sessions. This export contains no cell-voltage diagnostics, so cell-balance panels are omitted.";
+  if (p) p.textContent = DATA.capacityMethod === "reported_proxy"
+    ? "Reported charging energy provides a useful consistency check, but not battery-side capacity or SoH. This export contains no current or cell-voltage diagnostics."
+    : "Capacity is measured from charging sessions. This export contains no cell-voltage diagnostics, so cell-balance panels are omitted.";
 }
 const initialTab = location.hash.replace("#","");
 setTab(TABS.some(t => t[0] === initialTab) && !hiddenTabs.has(initialTab) ? initialTab : "overview", true);
@@ -3747,7 +4072,7 @@ def main():
     ap.add_argument("--utc-offset", type=float, default=None,
                     help="display timezone as hours from UTC (default: auto-detected from the vehicle clock)")
     ap.add_argument("--pack-kwh", type=float, default=None,
-                    help="usable battery capacity in kWh (default: measured from your charging sessions)")
+                    help="usable battery capacity in kWh (default: measured only with battery-side evidence; otherwise inferred/assumed)")
     ap.add_argument("--vehicle-title", default=None,
                     help="vehicle name shown in the dashboard header (default: detected from the VIN)")
     args = ap.parse_args()
