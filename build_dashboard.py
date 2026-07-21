@@ -983,13 +983,23 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
             export = json.load(f)
         vin = export.get("vin", vin)
         fresh = 0
-        for r in export["Data"]:
-            k = (r["dataFieldName"], r["value"], r.get("timestampUtc"), r["key"])
+        # Normalise records once at ingestion: real-world exports (e.g. Škoda)
+        # can omit "value" or "key" on individual records, and every consumer
+        # downstream assumes all four fields exist as strings.
+        data = export.get("Data") or []
+        for r in data:
+            field = r.get("dataFieldName")
+            if not isinstance(field, str):
+                continue
+            value = r.get("value")
+            value = "" if value is None else str(value)
+            k = (field, value, r.get("timestampUtc"), r.get("key"))
             if k not in seen:
                 seen.add(k)
-                recs.append(r)
+                recs.append({"dataFieldName": field, "value": value,
+                             "timestampUtc": r.get("timestampUtc"), "key": r.get("key")})
                 fresh += 1
-        print(f"loaded {os.path.basename(path)}: {len(export['Data']):,} records, {fresh:,} new")
+        print(f"loaded {os.path.basename(path)}: {len(data):,} records, {fresh:,} new")
     export_path = export_paths[-1]
     print(f"merged total: {len(recs):,} records for VIN {vin}")
 
