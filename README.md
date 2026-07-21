@@ -109,12 +109,18 @@ it decided is printed as it runs. To be explicit instead:
 python3 build_dashboard.py export.json -o dashboard.html
 ```
 
+Reports default to English. Generate the complete report in German, Dutch or
+Lithuanian with `--language de`, `--language nl` or `--language lt`. Official
+Data Dictionary descriptions, raw field names and raw payload values remain
+verbatim as source evidence.
+
 ### Options
 
 | Flag | What it does |
 |---|---|
 | `exports...` | one **or more** export JSONs — multiple files are merged and deduplicated |
 | `-o / --out` | output HTML path (default `dashboard.html` next to the export) |
+| `--language {en,de,nl,lt}` | report language (default `en`) |
 | `--csv` | also write cleaned per-series CSV files (SoC, odometer, charges, reporting activity, time-/SoC-based power curves, capacity evidence, monthly energy, trips…) |
 | `--price-kwh 0.21` | electricity price — adds cost estimates to the charging ledger |
 | `--currency €` | currency symbol for `--price-kwh` |

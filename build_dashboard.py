@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Build an interactive HTML dashboard from a Volkswagen EU Data Act export.
 
 Get your data: register at https://eu-data-act.drivesomethinggreater.com/de/en
@@ -8,6 +9,7 @@ See README.md for the full walkthrough.
 
 Usage:
     python3 build_dashboard.py [export.json ...] [-o dashboard.html]
+                               [--language {en,de,nl,lt}]
 
 Reads the vehicle data export (a flat list of {key, dataFieldName, value,
 timestampUtc} records), cleans known sensor error values, aggregates the
@@ -5037,7 +5039,11 @@ def detect_trips(odo, soc, speed, current, ambient, sample_gap_s=TRIP_SAMPLE_GAP
 
 
 def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
-          include_identifiers=False, vehicle_title=None, pack_kwh=None, utc_offset=None):
+          include_identifiers=False, vehicle_title=None, pack_kwh=None, utc_offset=None,
+          language="en"):
+    language = str(language).lower()
+    if language not in {"en", "de", "nl", "lt"}:
+        raise ValueError("language must be one of: en, de, nl, lt")
     # Merge any number of exports (VW purges history, so feeding every export
     # you ever request builds an archive deeper than any single package).
     recs, seen, vin = [], set(), None
@@ -6218,8 +6224,9 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
     data_json = data_json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     safe_title = vehicle_title.replace("&", "&amp;").replace("<", "&lt;")
     html = TEMPLATE.replace("/*__DATA__*/null", data_json) \
-                   .replace("__VEHICLE_TITLE__", safe_title)
-    with open(out_path, "w") as f:
+                   .replace("__VEHICLE_TITLE__", safe_title) \
+                   .replace("__REPORT_LANGUAGE__", language)
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"wrote {out_path} ({os.path.getsize(out_path) / 1e6:.1f} MB)")
 
@@ -6319,7 +6326,7 @@ def build(export_paths, out_path, price_kwh=None, currency="€", csv_dir=None,
 
 
 TEMPLATE = r"""<!doctype html>
-<html lang="en">
+<html lang="__REPORT_LANGUAGE__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -6607,22 +6614,550 @@ table.dv td:first-child { white-space:nowrap; }
 const DATA = /*__DATA__*/null;
 const OFF = DATA.tzOffsetH * 3600;
 const PACK_SHORT = (DATA.packSource || "").startsWith("measured") ? "measured" : "assumed";
+const DASHBOARD_LANGUAGE_TAGS = { en:"en-GB", de:"de-DE", nl:"nl-NL", lt:"lt-LT" };
+let DASHBOARD_LANGUAGE = "en";
+
+/* English remains the source text in the renderer. Each entry is
+ * [German, Dutch, Lithuanian]. Official VW dictionary descriptions are
+ * deliberately excluded by localizeDashboard(). */
+const DASHBOARD_TEXT = {
+  "Table":["Tabelle","Tabel","Lentelė"],
+  "km/h":["km/h","km/u","km/h"],
+  "kWh/100km":["kWh/100 km","kWh/100 km","kWh/100 km"],
+  "Theme: auto":["Design: automatisch","Thema: automatisch","Tema: automatinė"],
+  "Theme: light":["Design: hell","Thema: licht","Tema: šviesi"],
+  "Theme: dark":["Design: dunkel","Thema: donker","Tema: tamsi"],
+  "Vehicle data":["Fahrzeugdaten","Voertuiggegevens","Automobilio duomenys"],
+  "vehicle data":["Fahrzeugdaten","voertuiggegevens","automobilio duomenys"],
+  "Vehicle":["Fahrzeug","Voertuig","Automobilis"],
+  "Generated locally by ":["Lokal erstellt mit ","Lokaal gegenereerd door ","Vietoje sugeneravo "],
+  " — free in-browser analysis of Volkswagen Group EU Data Act exports. Nothing was uploaded.":[" — kostenlose Browser-Analyse von EU-Data-Act-Exporten des Volkswagen-Konzerns. Es wurde nichts hochgeladen."," — gratis browseranalyse van EU Data Act-exports van de Volkswagen Groep. Er is niets geüpload."," — nemokama „Volkswagen Group“ ES Duomenų akto eksportų analizė naršyklėje. Niekas nebuvo įkelta."],
+  "Dashboard sections":["Dashboard-Bereiche","Dashboardonderdelen","Skydelio skyriai"],
+  "Date range":["Zeitraum","Datumbereik","Datos intervalas"],
+  "Diagnostic range":["Diagnosezeitraum","Diagnostisch bereik","Diagnostikos laikotarpis"],
+  "Current state":["Aktueller Zustand","Huidige toestand","Dabartinė būsena"],
+  "Vehicle snapshot":["Fahrzeugübersicht","Voertuigmomentopname","Automobilio momentinė būsena"],
+  "The most recent status records in the package plus headline figures for the selected range. Snapshot cards are single observations, not a continuous history.":["Die neuesten Statusdaten im Paket sowie Kennzahlen für den gewählten Zeitraum. Momentaufnahmen sind Einzelbeobachtungen, kein lückenloser Verlauf.","De meest recente statusgegevens in het pakket plus kerncijfers voor de gekozen periode. Momentopnamen zijn losse waarnemingen, geen doorlopende historie.","Naujausi paketo būsenos įrašai ir pasirinkto laikotarpio pagrindiniai rodikliai. Momentinės kortelės yra pavieniai stebėjimai, o ne nenutrūkstama istorija."],
+  "Movement & energy":["Bewegung & Energie","Ritten & energie","Judėjimas ir energija"],
+  "Driving and charging":["Fahren und Laden","Rijden en laden","Važiavimas ir įkrovimas"],
+  "Distance reconciles to the odometer. Trips show observed movement and split at sustained charging stops; kilometres hidden inside long sampling gaps stay explicitly unassigned.":["Die Strecke wird mit dem Kilometerzähler abgeglichen. Fahrten zeigen beobachtete Bewegung und werden bei längeren Ladestopps geteilt; Kilometer in großen Messlücken bleiben ausdrücklich nicht zugeordnet.","Afstand wordt afgestemd op de kilometerstand. Ritten tonen waargenomen beweging en worden gesplitst bij langdurige laadstops; kilometers in lange meetgaten blijven expliciet niet toegewezen.","Atstumas suderinamas su odometru. Kelionės rodo stebėtą judėjimą ir atskiriamos per ilgesnius įkrovimo sustojimus; kilometrai ilgose matavimo spragose aiškiai paliekami nepriskirti."],
+  "High-voltage system":["Hochvoltsystem","Hoogspanningssysteem","Aukštos įtampos sistema"],
+  "Battery diagnostics":["Batteriediagnose","Accudiagnose","Baterijos diagnostika"],
+  "Cell balance and current are useful diagnostic proxies. They do not constitute an official state-of-health or usable-capacity measurement.":["Zellbalance und Strom sind nützliche Diagnoseindikatoren. Sie sind keine offizielle Messung von Batteriezustand oder nutzbarer Kapazität.","Celbalans en stroom zijn nuttige diagnostische indicatoren. Ze vormen geen officiële meting van de accugezondheid of bruikbare capaciteit.","Celių balansas ir srovė yra naudingi diagnostiniai rodikliai. Tai nėra oficialus baterijos būklės ar naudingosios talpos matavimas."],
+  "Heat movement":["Wärmeströme","Warmtestromen","Šilumos judėjimas"],
+  "Thermal system":["Thermosystem","Thermisch systeem","Šiluminė sistema"],
+  "Seven undocumented temperature channels are retained as Sensors A–G, alongside coolant flow and the vehicle’s own operating-mode labels.":["Sieben undokumentierte Temperaturkanäle werden als Sensoren A–G zusammen mit Kühlmittelfluss und den fahrzeugeigenen Betriebsmodus-Bezeichnungen dargestellt.","Zeven ongedocumenteerde temperatuurkanalen blijven zichtbaar als sensoren A–G, naast koelmiddelstroom en de eigen bedrijfsmoduslabels van het voertuig.","Septyni nedokumentuoti temperatūros kanalai rodomi kaip jutikliai A–G kartu su aušinimo skysčio srautu ir automobilio veikimo režimų pavadinimais."],
+  "Backend trail":["Backend-Verlauf","Backendspoor","Sistemų žurnalas"],
+  "Activity and configuration":["Aktivität und Konfiguration","Activiteit en configuratie","Veikla ir konfigūracija"],
+  "Remote actions, backend errors, vehicle reports, and settings found anywhere in the package, including records outside the diagnostic window.":["Fernaktionen, Backend-Fehler, Fahrzeugberichte und Einstellungen aus dem gesamten Paket, einschließlich Einträgen außerhalb des Diagnosezeitraums.","Acties op afstand, backendfouten, voertuigrapporten en instellingen uit het hele pakket, ook buiten het diagnostische tijdvenster.","Nuotoliniai veiksmai, sistemų klaidos, automobilio ataskaitos ir nustatymai iš viso paketo, įskaitant įrašus už diagnostikos laikotarpio ribų."],
+  "Package audit":["Paketprüfung","Pakketaudit","Paketo auditas"],
+  "Completeness evidence":["Vollständigkeitsnachweis","Bewijs van volledigheid","Išsamumo įrodymai"],
+  "What the dictionary says exists, what this export actually contains, and how deep each delivered category goes.":["Was laut Datenwörterbuch existiert, was dieser Export tatsächlich enthält und wie umfangreich jede gelieferte Kategorie ist.","Wat volgens het gegevenswoordenboek bestaat, wat deze export werkelijk bevat en hoe diep elke geleverde categorie gaat.","Kas pagal duomenų žodyną egzistuoja, ką šis eksportas iš tikrųjų turi ir kokia kiekvienos pateiktos kategorijos apimtis."],
+  "Data provenance legend":["Legende der Datenherkunft","Legenda gegevensherkomst","Duomenų kilmės paaiškinimas"],
+  "Observed":["Beobachtet","Waargenomen","Stebėta"],
+  "Derived":["Abgeleitet","Afgeleid","Išvesta"],
+  "Inferred":["Erschlossen","Afgeleid uit patroon","Nustatyta pagal požymius"],
+  "observed":["beobachtet","waargenomen","stebėta"],
+  "derived":["abgeleitet","afgeleid","išvesta"],
+  "inferred":["erschlossen","geïnterpreteerd","nustatyta"],
+  "Directly present in the export":["Direkt im Export enthalten","Rechtstreeks aanwezig in de export","Tiesiogiai pateikta eksporte"],
+  "Calculated from observed samples":["Aus beobachteten Messwerten berechnet","Berekend uit waargenomen metingen","Apskaičiuota iš stebėtų mėginių"],
+  "Undocumented channel meaning or assumption":["Undokumentierte Kanalbedeutung oder Annahme","Ongedocumenteerde kanaalbetekenis of aanname","Nedokumentuota kanalo reikšmė arba prielaida"],
+  "Data inventory — every field in the export":["Datenbestand — jedes Feld im Export","Gegevensinventaris — elk veld in de export","Duomenų sąrašas — visi eksporto laukai"],
+  "Overview":["Überblick","Overzicht","Apžvalga"],
+  "Driving & charging":["Fahren & Laden","Rijden & laden","Važiavimas ir įkrovimas"],
+  "Battery":["Batterie","Accu","Baterija"],
+  "Thermal":["Thermik","Thermisch","Šiluma"],
+  "Backend & config":["Backend & Konfiguration","Backend & configuratie","Sistemos ir konfigūracija"],
+  "All diagnostics":["Alle Diagnosedaten","Alle diagnostiek","Visa diagnostika"],
+  "Last 30 days":["Letzte 30 Tage","Laatste 30 dagen","Pastarosios 30 dienų"],
+  "Last 7 days":["Letzte 7 Tage","Laatste 7 dagen","Pastarosios 7 dienos"],
+  "Battery & range":["Batterie & Reichweite","Accu & bereik","Baterija ir nuvažiuojamas atstumas"],
+  "Estimated range":["Geschätzte Reichweite","Geschat bereik","Numatomas nuvažiuojamas atstumas"],
+  "Battery temperature":["Batterietemperatur","Accutemperatuur","Baterijos temperatūra"],
+  "Battery care mode":["Batterieschutzmodus","Accubeschermingsmodus","Baterijos tausojimo režimas"],
+  "Care mode charge cap":["Ladelimit im Schutzmodus","Laadlimiet beschermingsmodus","Tausojimo režimo įkrovos riba"],
+  "Care notification":["Schutzhinweis","Beschermingsmelding","Tausojimo pranešimas"],
+  "Charging":["Laden","Laden","Įkrovimas"],
+  "State":["Status","Status","Būsena"],
+  "Charge power":["Ladeleistung","Laadvermogen","Įkrovimo galia"],
+  "Plug":["Stecker","Stekker","Kištukas"],
+  "Mode":["Modus","Modus","Režimas"],
+  "Maximum current":["Maximalstrom","Maximale stroom","Didžiausia srovė"],
+  "Automatic plug unlock":["Automatische Steckerentriegelung","Stekker automatisch ontgrendelen","Automatinis kištuko atrakinimas"],
+  "Charge mode":["Lademodus","Laadmodus","Įkrovimo režimas"],
+  "Action state":["Aktionsstatus","Actiestatus","Veiksmo būsena"],
+  "Charge type":["Ladeart","Laadtype","Įkrovimo tipas"],
+  "Plug type":["Steckertyp","Stekkertype","Kištuko tipas"],
+  "Infrastructure":["Infrastruktur","Infrastructuur","Infrastruktūra"],
+  "Bidirectional (V2H)":["Bidirektional (V2H)","Bidirectioneel (V2H)","Dvikryptis įkrovimas (V2H)"],
+  "Auxiliary & climate load":["Nebenverbraucher & Klimalast","Hulpverbruik & klimaatbelasting","Pagalbinė ir klimato apkrova"],
+  "Residual network load":["Restnetzlast","Resterende netwerkbelasting","Likusi tinklo apkrova"],
+  "Interior climatisation":["Innenraumklimatisierung","Interieurklimatisering","Salono klimato kontrolė"],
+  "Battery climatisation":["Batterieklimatisierung","Accuklimatisering","Baterijos klimato kontrolė"],
+  "24h budget start level":["Startwert des 24-h-Budgets","Startniveau 24-uursbudget","24 val. biudžeto pradinis lygis"],
+  "Power budget warning":["Leistungsbudget-Warnung","Waarschuwing vermogensbudget","Galios biudžeto įspėjimas"],
+  "Daily budget warning":["Tagesbudget-Warnung","Waarschuwing dagbudget","Dienos biudžeto įspėjimas"],
+  "Vehicle":["Fahrzeug","Voertuig","Automobilis"],
+  "Outdoor temperature":["Außentemperatur","Buitentemperatuur","Lauko temperatūra"],
+  "Parking brake":["Parkbremse","Parkeerrem","Stovėjimo stabdys"],
+  "Parking lights":["Parklicht","Parkeerlichten","Stovėjimo žibintai"],
+  "Next service":["Nächster Service","Volgende onderhoudsbeurt","Kitas aptarnavimas"],
+  "Climate":["Klima","Klimaat","Klimatas"],
+  "Trigger":["Auslöser","Aanleiding","Priežastis"],
+  "Target":["Solltemperatur","Doel","Tikslinė temperatūra"],
+  "Window heating":["Scheibenheizung","Ruitverwarming","Langų šildymas"],
+  "Run without external power":["Betrieb ohne externe Stromversorgung","Werken zonder externe stroom","Veikti be išorinio maitinimo"],
+  "Start when unlocking":["Beim Entriegeln starten","Starten bij ontgrendelen","Paleisti atrakinant"],
+  "Front zones":["Vordere Zonen","Voorzones","Priekinės zonos"],
+  "Rear zones":["Hintere Zonen","Achterzones","Galinės zonos"],
+  "Reported timer state":["Gemeldeter Timerstatus","Gemelde timerstatus","Pranešta laikmačio būsena"],
+  "Charge timer option available":["Ladezeitplan verfügbar","Laadtimeroptie beschikbaar","Galima įkrovimo laikmačio parinktis"],
+  "Charge + climate option":["Laden + Klima","Laden + klimaat","Įkrovimas ir klimatas"],
+  "Connectivity":["Konnektivität","Connectiviteit","Ryšiai"],
+  "Vehicle connected":["Fahrzeug verbunden","Voertuig verbonden","Automobilis prisijungęs"],
+  "Backend domains active":["Backend-Domänen aktiv","Backenddomeinen actief","Aktyvios sistemų sritys"],
+  "Communications unit":["Kommunikationseinheit","Communicatie-eenheid","Ryšio įrenginys"],
+  "V2X communication":["V2X-Kommunikation","V2X-communicatie","V2X ryšys"],
+  "Connection timestamp":["Verbindungszeitpunkt","Verbindingstijdstip","Prisijungimo laikas"],
+  "Doors & closures":["Türen & Verschlüsse","Deuren & sluitingen","Durys ir uždarymai"],
+  "Battery health":["Batteriezustand","Accugezondheid","Baterijos būklė"],
+  "Battery evidence":["Batterienachweise","Accubewijs","Baterijos duomenys"],
+  "Battery looks healthy":["Batterie wirkt gesund","Accu lijkt gezond","Baterija atrodo sveika"],
+  "Battery shows normal wear":["Batterie zeigt normale Alterung","Accu vertoont normale slijtage","Baterija rodo įprastą dėvėjimąsi"],
+  "Battery worth checking":["Batterie sollte geprüft werden","Accu verdient controle","Bateriją verta patikrinti"],
+  "Not enough data to assess the battery":["Nicht genügend Daten zur Batteriebewertung","Onvoldoende gegevens om de accu te beoordelen","Nepakanka duomenų baterijai įvertinti"],
+  "Healthy":["Gesund","Gezond","Sveika"], "Normal wear":["Normale Alterung","Normale slijtage","Įprastas dėvėjimasis"],
+  "Check advised":["Prüfung empfohlen","Controle aanbevolen","Rekomenduojama patikrinti"],
+  "Distance driven":["Gefahrene Strecke","Gereden afstand","Nuvažiuotas atstumas"],
+  "Avg consumption":["Ø Verbrauch","Gem. verbruik","Vid. sąnaudos"],
+  "Energy charged":["Geladene Energie","Geladen energie","Įkrauta energija"],
+  "Regen recovered":["Rekuperierte Energie","Teruggewonnen regeneratie","Atgauta regeneruojant"],
+  "Idle drain":["Verlust im Stand","Stilstandsverlies","Nuostolis stovint"],
+  "Days with driving":["Tage mit Fahrten","Dagen met ritten","Dienos su važiavimu"],
+  "Observed trips":["Beobachtete Fahrten","Waargenomen ritten","Stebėtos kelionės"],
+  "Top speed":["Höchstgeschwindigkeit","Topsnelheid","Didžiausias greitis"],
+  "Distance added to odometer":["Zum Kilometerzähler addierte Strecke","Aan kilometerstand toegevoegde afstand","Prie odometro pridėtas atstumas"],
+  "When the car is driven":["Wann das Auto gefahren wird","Wanneer de auto rijdt","Kada automobilis važiuoja"],
+  "When the vehicle was reporting":["Wann das Fahrzeug Daten meldete","Wanneer het voertuig rapporteerde","Kada automobilis siuntė duomenis"],
+  "Speed distribution":["Geschwindigkeitsverteilung","Snelheidsverdeling","Greičio pasiskirstymas"],
+  "Charging power curves":["Ladeleistungskurven","Laadvermogencurven","Įkrovimo galios kreivės"],
+  "Charging power by state of charge":["Ladeleistung nach Ladestand","Laadvermogen per laadniveau","Įkrovimo galia pagal įkrovos lygį"],
+  "Energy charged per day":["Geladene Energie pro Tag","Geladen energie per dag","Per dieną įkrauta energija"],
+  "Energy charged per month":["Geladene Energie pro Monat","Geladen energie per maand","Per mėnesį įkrauta energija"],
+  "Energy consumption per day":["Energieverbrauch pro Tag","Energieverbruik per dag","Energijos sąnaudos per dieną"],
+  "Battery state of charge":["Batterieladestand","Acculaadniveau","Baterijos įkrovos lygis"],
+  "Highest vs lowest cell voltage":["Höchste und niedrigste Zellspannung","Hoogste versus laagste celspanning","Didžiausia ir mažiausia celės įtampa"],
+  "Battery cell imbalance":["Zellspannungsabweichung","Onbalans tussen accucellen","Baterijos celių disbalansas"],
+  "HV battery current":["HV-Batteriestrom","HV-accustroom","Aukštos įtampos baterijos srovė"],
+  "Cell spread by operating state":["Zellspreizung nach Betriebszustand","Celspreiding per bedrijfstoestand","Celių sklaida pagal veikimo būseną"],
+  "Cell spread by state of charge":["Zellspreizung nach Ladestand","Celspreiding per laadniveau","Celių sklaida pagal įkrovos lygį"],
+  "Pack voltage":["Batteriespannung","Accuspanning","Baterijos įtampa"],
+  "Ambient temperature":["Umgebungstemperatur","Omgevingstemperatuur","Aplinkos temperatūra"],
+  "Thermal management modes":["Thermomanagement-Modi","Thermische beheermodi","Šilumos valdymo režimai"],
+  "Thermal sensor traces":["Verläufe der Temperatursensoren","Thermische sensorcurven","Šiluminių jutiklių kreivės"],
+  "Coolant flow":["Kühlmittelfluss","Koelmiddelstroom","Aušinimo skysčio srautas"],
+  "Coolant valve actuation":["Ansteuerung der Kühlmittelventile","Aansturing koelmiddelkleppen","Aušinimo vožtuvų valdymas"],
+  "Highest cell":["Höchste Zelle","Hoogste cel","Aukščiausia celė"],
+  "Lowest cell":["Niedrigste Zelle","Laagste cel","Žemiausia celė"],
+  "Median cell spread":["Median der Zellspreizung","Mediane celspreiding","Celių sklaidos mediana"],
+  "HV current":["HV-Strom","HV-stroom","Aukštos įtampos srovė"],
+  "Charge power":["Ladeleistung","Laadvermogen","Įkrovimo galia"],
+  "Charging (>5 A)":["Laden (>5 A)","Laden (>5 A)","Įkrovimas (>5 A)"],
+  "Heavy load (<−50 A)":["Hohe Last (<−50 A)","Zware belasting (<−50 A)","Didelė apkrova (<−50 A)"],
+  "Light load":["Leichte Last","Lichte belasting","Maža apkrova"],
+  "Idle (±5 A)":["Ruhezustand (±5 A)","Rust (±5 A)","Ramybė (±5 A)"],
+  "Charging ledger":["Ladeprotokoll","Laadlogboek","Įkrovimų žurnalas"],
+  "Observed trip ledger":["Fahrtenprotokoll","Logboek waargenomen ritten","Stebėtų kelionių žurnalas"],
+  "Parked drain events":["Standverlust-Ereignisse","Stilstandsverlies","Išsikrovimas stovint"],
+  "Movement across sampling gaps":["Bewegung in Messlücken","Beweging tijdens meetgaten","Judėjimas matavimo spragose"],
+  "Remote actions, reports and errors":["Fernaktionen, Berichte und Fehler","Acties op afstand, rapporten en fouten","Nuotoliniai veiksmai, ataskaitos ir klaidos"],
+  "Full raw-export timeline; not limited by the diagnostic range filter":["Vollständiger Rohdatenverlauf; nicht durch den Diagnosezeitraum begrenzt","Volledige tijdlijn van de ruwe export; niet beperkt door het diagnostische filter","Visa neapdoroto eksporto laiko juosta; diagnostikos laikotarpio filtras netaikomas"],
+  "Vehicle configuration snapshot":["Momentaufnahme der Fahrzeugkonfiguration","Momentopname voertuigconfiguratie","Automobilio konfigūracijos momentinė būsena"],
+  "Coverage by delivered category":["Abdeckung nach gelieferter Kategorie","Dekking per geleverde categorie","Aprėptis pagal pateiktą kategoriją"],
+  "Dictionary fields cited but not delivered":["Genannte, aber nicht gelieferte Wörterbuchfelder","Genoemde maar niet geleverde woordenboekvelden","Nurodyti, bet nepateikti žodyno laukai"],
+  "Checked against VW's Data Dictionary V4.0 (bundled) and the JSON export":["Abgleich mit VWs Data Dictionary V4.0 (integriert) und dem JSON-Export","Gecontroleerd aan de hand van VW's Data Dictionary V4.0 (ingebouwd) en de JSON-export","Patikrinta pagal integruotą VW duomenų žodyną V4.0 ir JSON eksportą"],
+  "Dictionary keys":["Wörterbuchschlüssel","Woordenboeksleutels","Žodyno raktai"],
+  "Dictionary-matched keys":["Wörterbuchtreffer","Sleutels met woordenboekmatch","Su žodynu sutapę raktai"],
+  "Numeric diagnostic records":["Numerische Diagnoseeinträge","Numerieke diagnostische records","Skaitiniai diagnostikos įrašai"],
+  "Diagnostic lag":["Diagnoseverzug","Diagnostische achterstand","Diagnostikos atsilikimas"],
+  "Yes":["Ja","Ja","Taip"], "No":["Nein","Nee","Ne"],
+  "On":["Ein","Aan","Įjungta"], "Off":["Aus","Uit","Išjungta"],
+  "Engaged":["Aktiviert","Ingeschakeld","Įjungtas"], "Released":["Gelöst","Vrijgegeven","Atleistas"],
+  "Running":["Aktiv","Actief","Veikia"], "Shutting down":["Wird heruntergefahren","Wordt afgesloten","Išjungiama"],
+  "Activated":["Aktiviert","Geactiveerd","Aktyvinta"], "Deactivated":["Deaktiviert","Gedeactiveerd","Išjungta"],
+  "Available":["Verfügbar","Beschikbaar","Pasiekiama"], "Unavailable":["Nicht verfügbar","Niet beschikbaar","Nepasiekiama"],
+  "Maximum":["Maximum","Maximum","Didžiausia"], "Manual":["Manuell","Handmatig","Rankinis"],
+  "Disconnected":["Nicht verbunden","Niet aangesloten","Atjungta"], "Connected":["Verbunden","Aangesloten","Prijungta"],
+  "Unlocked":["Entriegelt","Ontgrendeld","Atrakinta"], "Locked":["Verriegelt","Vergrendeld","Užrakinta"],
+  "Open":["Offen","Open","Atidaryta"], "Closed":["Geschlossen","Gesloten","Uždaryta"],
+  "Not ready for charging":["Nicht ladebereit","Niet gereed om te laden","Nepasiruošęs įkrauti"],
+  "No reason":["Kein Grund","Geen reden","Nėra priežasties"],
+  "Immediately default":["Sofort (Standard)","Direct (standaard)","Iškart (numatyta)"],
+  "Charge mode selection":["Lademodus-Auswahl","Keuze laadmodus","Įkrovimo režimo pasirinkimas"],
+  "Inspection":["Inspektion","Inspectie","Patikra"],
+  "DC fast":["DC-Schnellladen","DC-snelladen","Greitasis DC įkrovimas"],
+  "Slow / scheduled":["Langsam / geplant","Langzaam / gepland","Lėtas / suplanuotas"],
+  "No valve samples in this export.":["Keine Ventilmesswerte in diesem Export.","Geen klepmetingen in deze export.","Šiame eksporte nėra vožtuvų mėginių."],
+  "No detailed time-based charging curve is available in this range.":["Für diesen Zeitraum ist keine detaillierte zeitbasierte Ladekurve verfügbar.","Voor deze periode is geen gedetailleerde laadcurve in de tijd beschikbaar.","Šiame laikotarpyje nėra išsamios įkrovimo galios kreivės pagal laiką."],
+  "No mode telemetry":["Keine Modus-Telemetrie","Geen modustelemetrie","Nėra režimo telemetrijos"],
+  "Climate ran — likely conditioning":["Klimatisierung aktiv — vermutlich Vorkonditionierung","Klimaatregeling actief — waarschijnlijk conditionering","Klimato kontrolė veikė — tikėtinas kondicionavimas"],
+  "Quiet park":["Ruhiger Parkzeitraum","Rustige parkeerperiode","Ramus stovėjimas"],
+  "No movement telemetry":["Keine Bewegungstelemetrie","Geen bewegingstelemetrie","Nėra judėjimo telemetrijos"],
+  "Raw peak discharge":["Rohe Entladespitze","Ruwe piekontlading","Neapdorotas didžiausias iškrovimas"],
+  "Raw 5th percentile":["Rohwert, 5. Perzentil","Ruw 5e percentiel","Neapdorotas 5-asis procentilis"],
+  "Raw 95th percentile":["Rohwert, 95. Perzentil","Ruw 95e percentiel","Neapdorotas 95-asis procentilis"],
+  "Raw peak positive":["Roher positiver Spitzenwert","Ruwe positieve piek","Neapdorotas didžiausias teigiamas dydis"],
+  "°C, 30-min averages of inferred channel 180806":["°C, 30-Minuten-Mittelwerte des erschlossenen Kanals 180806","°C, gemiddelden van 30 minuten van afgeleid kanaal 180806","°C, nustatyto kanalo 180806 30 min. vidurkiai"],
+  "L/min, 10-min averages of inferred channel 546697":["L/min, 10-Minuten-Mittelwerte des erschlossenen Kanals 546697","L/min, gemiddelden van 10 minuten van afgeleid kanaal 546697","L/min, nustatyto kanalo 546697 10 min. vidurkiai"],
+  "Min °C":["Min. °C","Min. °C","Min. °C"], "Max °C":["Max. °C","Max. °C","Maks. °C"],
+  "Ventilation":["Lüftung","Ventilatie","Vėdinimas"],
+  "Cabin cooling + HGK":["Innenraumkühlung + HGK","Interieurkoeling + HGK","Salono vėsinimas + HGK"],
+  "Cabin cooling":["Innenraumkühlung","Interieurkoeling","Salono vėsinimas"],
+  "Combined heating (heat pump)":["Kombiniertes Heizen (Wärmepumpe)","Gecombineerde verwarming (warmtepomp)","Kombinuotas šildymas (šilumos siurblys)"],
+  "Shutdown":["Abschaltung","Uitschakeling","Išjungimas"],
+  "Air heating (heat pump)":["Luftheizung (Wärmepumpe)","Luchtverwarming (warmtepomp)","Oro šildymas (šilumos siurblys)"],
+  "Coolant valve 543814":["Kühlmittelventil 543814","Koelmiddelklep 543814","Aušinimo vožtuvas 543814"],
+  "Coolant valve 544790":["Kühlmittelventil 544790","Koelmiddelklep 544790","Aušinimo vožtuvas 544790"],
+  "Success":["Erfolgreich","Geslaagd","Pavyko"],
+  "true":["Ja","Ja","Taip"], "false":["Nein","Nee","Ne"],
+  "daily median spread between highest and lowest cell, mV — small and stable is healthy":["Täglicher Median der Differenz zwischen höchster und niedrigster Zellspannung in mV — klein und stabil ist gesund","dagelijkse mediane spreiding tussen hoogste en laagste cel, mV — klein en stabiel is gezond","dienos sklaidos tarp didžiausios ir mažiausios celės mediana, mV — maža ir stabili reikšmė yra geras ženklas"],
+  "A, 2-min averages of inferred channel 546774; raw full-window extremes are summarized below":["A, 2-Minuten-Mittelwerte des erschlossenen Kanals 546774; rohe Extremwerte des gesamten Zeitraums stehen unten","A, gemiddelden van 2 minuten van afgeleid kanaal 546774; ruwe extremen over het hele venster staan hieronder","A, nustatyto kanalo 546774 2 min. vidurkiai; viso laikotarpio neapdoroti ekstremumai pateikti žemiau"],
+  "95th-percentile spread while charging, under load, and at rest — divergence under load is the earliest weak-cell sign":["95. Perzentil der Spreizung beim Laden, unter Last und im Ruhezustand — Auseinanderdriften unter Last ist das früheste Zeichen einer schwachen Zelle","95e percentiel van de spreiding tijdens laden, onder belasting en in rust — uiteenlopen onder belasting is het vroegste teken van een zwakke cel","95-asis sklaidos procentilis įkraunant, esant apkrovai ir ramybės būsenoje — išsiskyrimas esant apkrovai yra ankstyviausias silpnos celės požymis"],
+  "95th-percentile spread within each SoC band":["95. Perzentil der Spreizung in jedem SoC-Bereich","95e percentiel van de spreiding binnen elke SoC-band","95-asis sklaidos procentilis kiekviename SoC intervale"],
+  "V, 20-min averages — mean cell voltage × 96 series cells":["V, 20-Minuten-Mittelwerte — mittlere Zellspannung × 96 Reihenzellen","V, gemiddelden van 20 minuten — gemiddelde celspanning × 96 cellen in serie","V, 20 min. vidurkiai — vidutinė celės įtampa × 96 nuoseklios celės"],
+  "share of samples in range, channel 543919":["Anteil der Messwerte im Zeitraum, Kanal 543919","aandeel metingen in de periode, kanaal 543919","laikotarpio mėginių dalis, kanalas 543919"],
+  "20-min averages; exact component locations are not documented":["20-Minuten-Mittelwerte; genaue Einbauorte der Komponenten sind nicht dokumentiert","gemiddelden van 20 minuten; exacte componentlocaties zijn niet gedocumenteerd","20 min. vidurkiai; tikslios komponentų vietos nedokumentuotos"],
+  "inferred channels 543814 / 544790 — periods where the valve was commanded; actuation tracks the heat-pump modes":["erschlossene Kanäle 543814 / 544790 — Zeiträume mit Ventilansteuerung; die Ansteuerung folgt den Wärmepumpenmodi","afgeleide kanalen 543814 / 544790 — perioden waarin de klep werd aangestuurd; de aansturing volgt de warmtepompmodi","nustatyti kanalai 543814 / 544790 — laikotarpiai, kai vožtuvas buvo valdomas; valdymas atitinka šilumos siurblio režimus"],
+  "Gaps with evidence are not promoted to trips: one gap can hide several drives, and the sparse samples cover only a fraction of the distance. The window shows when movement is proven, not its full extent.":["Lücken mit Nachweisen werden nicht zu Fahrten erklärt: Eine Lücke kann mehrere Fahrten verbergen, und die wenigen Messwerte decken nur einen Teil der Strecke ab. Das Fenster zeigt, wann Bewegung belegt ist, nicht deren gesamten Umfang.","Meetgaten met bewijs worden niet tot ritten verheven: één gat kan meerdere ritten verbergen en de schaarse metingen dekken slechts een deel van de afstand. Het venster toont wanneer beweging is bewezen, niet de volledige omvang.","Spragos su įrodymais nelaikomos kelionėmis: vienoje spragoje gali būti kelios kelionės, o reti mėginiai apima tik dalį atstumo. Laikotarpis rodo, kada judėjimas patvirtintas, bet ne visą jo apimtį."],
+  "Unknown":["Unbekannt","Onbekend","Nežinoma"],
+  "explicit":["explizit","expliciet","aiški"],
+  "factory default":["Werkseinstellung","fabrieksinstelling","gamyklinė nuostata"],
+  "Vehicle platform MEB confirmed by the export — the 96-series battery analysis applies.":["Fahrzeugplattform MEB durch den Export bestätigt — die Batterieanalyse mit 96 Reihenzellen ist anwendbar.","Voertuigplatform MEB bevestigd door de export — de accuanalyse met 96 cellen in serie is van toepassing.","Eksportas patvirtina MEB automobilio platformą — taikoma 96 nuoseklių celių baterijos analizė."],
+  "This export carries the vehicle's charging history and activity timestamps rather than odometer-based trips — distance and trip panels are omitted.":["Dieser Export enthält die Ladehistorie und Aktivitätszeitpunkte des Fahrzeugs statt kilometerzählerbasierter Fahrten — Strecken- und Fahrtbereiche werden ausgelassen.","Deze export bevat de laadgeschiedenis en activiteitstijdstippen van het voertuig in plaats van ritten op basis van de kilometerstand — afstands- en ritpanelen worden weggelaten.","Šiame eksporte yra automobilio įkrovimo istorija ir veiklos laikai, bet nėra pagal odometrą nustatytų kelionių — atstumo ir kelionių skydeliai nerodomi."],
+  "Reported charging energy provides a useful consistency check, but not battery-side capacity or SoH. This export contains no current or cell-voltage diagnostics.":["Die gemeldete Ladeenergie ermöglicht eine nützliche Plausibilitätsprüfung, aber keine batterieseitige Kapazitäts- oder SOH-Bestimmung. Dieser Export enthält keine Strom- oder Zellspannungsdiagnose.","De gemelde laadenergie biedt een nuttige consistentiecontrole, maar geen capaciteit aan accuzijde of SOH. Deze export bevat geen stroom- of celspanningsdiagnostiek.","Pranešta įkrovimo energija leidžia naudingai patikrinti nuoseklumą, bet ne baterijos talpą ar SOH. Šiame eksporte nėra srovės ar celių įtampos diagnostikos."],
+  "Capacity is measured from charging sessions. This export contains no cell-voltage diagnostics, so cell-balance panels are omitted.":["Die Kapazität wird aus Ladevorgängen gemessen. Dieser Export enthält keine Zellspannungsdiagnose; Zellbalance-Bereiche werden daher ausgelassen.","De capaciteit wordt gemeten uit laadsessies. Deze export bevat geen celspanningsdiagnostiek, dus celbalanspanelen worden weggelaten.","Talpa matuojama iš įkrovimo sesijų. Šiame eksporte nėra celių įtampos diagnostikos, todėl celių balanso skydeliai nerodomi."],
+  "Timestamp-only speed records; values were withheld, so these are not confirmed trips":["Geschwindigkeitseinträge nur mit Zeitstempel; Werte wurden nicht geliefert, daher sind dies keine bestätigten Fahrten","Snelheidsrecords met alleen tijdstippen; waarden zijn achtergehouden, dus dit zijn geen bevestigde ritten","Greičio įrašuose yra tik laikas; reikšmės nepateiktos, todėl tai nėra patvirtintos kelionės"],
+  "charge power per session as reported by the vehicle, 5-min averages":["vom Fahrzeug gemeldete Ladeleistung je Sitzung, 5-Minuten-Mittelwerte","laadvermogen per sessie zoals gemeld door het voertuig, gemiddelden van 5 minuten","automobilio pranešta kiekvienos sesijos įkrovimo galia, 5 min. vidurkiai"],
+  "battery-side charge power per session, 5-min averages — taper and pauses become visible":["batterieseitige Ladeleistung je Sitzung, 5-Minuten-Mittelwerte — Drosselung und Pausen werden sichtbar","laadvermogen aan accuzijde per sessie, gemiddelden van 5 minuten — afbouw en pauzes worden zichtbaar","kiekvienos sesijos įkrovimo galia baterijos pusėje, 5 min. vidurkiai — matomas galios mažėjimas ir pauzės"],
+  "vehicle-reported power against vehicle-reported SoC; each curve follows one charging session":["vom Fahrzeug gemeldete Leistung gegenüber gemeldetem SoC; jede Kurve entspricht einem Ladevorgang","door het voertuig gemeld vermogen tegenover gemelde SoC; elke curve volgt één laadsessie","automobilio pranešta galia pagal praneštą SoC; kiekviena kreivė atitinka vieną įkrovimo sesiją"],
+  "kWh per day from the vehicle's own daily aggregation":["kWh pro Tag aus der fahrzeugeigenen Tagesaggregation","kWh per dag uit de eigen dagaggregatie van het voertuig","kWh per dieną iš paties automobilio dienos suvestinės"],
+  "kWh per month from the vehicle's own monthly aggregation":["kWh pro Monat aus der fahrzeugeigenen Monatsaggregation","kWh per maand uit de eigen maandaggregatie van het voertuig","kWh per mėnesį iš paties automobilio mėnesio suvestinės"],
+  "%, observed only at charging-session boundaries and in recent charging curves; not continuous driving history":["%, nur an den Grenzen von Ladevorgängen und in aktuellen Ladekurven beobachtet; kein durchgehender Fahrverlauf","%, alleen waargenomen aan de grenzen van laadsessies en in recente laadcurven; geen doorlopende rijhistorie","%, stebėta tik įkrovimo sesijų ribose ir naujausiose įkrovimo kreivėse; tai nėra nenutrūkstama važiavimo istorija"],
+  "%, combined diagnostic samples and observed charging-session values":["%, kombinierte Diagnosemesswerte und beobachtete Werte aus Ladevorgängen","%, gecombineerde diagnostische metingen en waargenomen laadsessiewaarden","%, sujungti diagnostikos mėginiai ir stebėtos įkrovimo sesijų reikšmės"],
+  "%, inferred diagnostic channel 180886 — sampled only while the car is awake":["%, erschlossener Diagnosekanal 180886 — nur gemessen, wenn das Fahrzeug aktiv ist","%, afgeleid diagnostisch kanaal 180886 — alleen bemonsterd wanneer de auto wakker is","%, nustatytas diagnostikos kanalas 180886 — matuota tik automobiliui esant aktyviam"],
+  "Diagnostic estimate from charging sessions and cell voltages — not an official state-of-health measurement.":["Diagnostische Schätzung aus Ladevorgängen und Zellspannungen — keine offizielle SOH-Messung.","Diagnostische schatting uit laadsessies en celspanningen — geen officiële SOH-meting.","Diagnostinis įvertis iš įkrovimo sesijų ir celių įtampos — ne oficialus SOH matavimas."],
+  "The reported-energy ratio is not part of the verdict above; that verdict relies on cell-balance evidence only.":["Das Verhältnis der gemeldeten Energie fließt nicht in die obige Bewertung ein; diese stützt sich ausschließlich auf die Zellbalance.","De verhouding van de gemelde energie maakt geen deel uit van het oordeel hierboven; dat berust uitsluitend op celbalansbewijs.","Praneštos energijos santykis neįtrauktas į aukščiau pateiktą vertinimą; jis remiasi tik celių balanso duomenimis."],
+  "This export contains no battery-current or cell-voltage history, so it cannot support a battery-health verdict.":["Dieser Export enthält keinen Verlauf von Batteriestrom oder Zellspannung und erlaubt daher keine Batteriezustandsbewertung.","Deze export bevat geen geschiedenis van accustroom of celspanning en kan daarom geen oordeel over de accugezondheid ondersteunen.","Šiame eksporte nėra baterijos srovės ar celių įtampos istorijos, todėl baterijos būklės įvertinti negalima."],
+  "Time (UTC+3)":["Zeit (UTC+3)","Tijd (UTC+3)","Laikas (UTC+3)"],
+  "End":["Ende","Einde","Pabaiga"], "End / duration":["Ende / Dauer","Einde / duur","Pabaiga / trukmė"],
+  "Energy":["Energie","Energie","Energija"], "Avg power":["Ø Leistung","Gem. vermogen","Vid. galia"],
+  "Elapsed / active":["Dauer / aktiv","Verstreken / actief","Trukmė / aktyvu"],
+  "Plugged in":["Angeschlossen","Aangesloten","Prijungta"],
+  "Charge start":["Ladebeginn","Begin laden","Įkrovimo pradžia"],
+  "Immediatelydefault":["Sofort (Standard)","Direct (standaard)","Iškart (numatyta)"],
+  "Speed samples":["Geschwindigkeitsmesswerte","Snelheidsmetingen","Greičio mėginiai"],
+  "Distance":["Strecke","Afstand","Atstumas"], "Ambient":["Umgebung","Omgeving","Aplinka"],
+  "Peak current":["Spitzenstrom","Piekstroom","Didžiausia srovė"],
+  "Avg / max speed":["Ø / max. Geschwindigkeit","Gem. / max. snelheid","Vid. / didž. greitis"],
+  "Moving":["In Bewegung","In beweging","Judėjimas"],
+  "Est. consumption":["Geschätzter Verbrauch","Geschat verbruik","Numatomos sąnaudos"],
+  "∫I·V check":["∫I·V-Gegenprobe","∫I·V-controle","∫I·V patikra"],
+  "SoC used":["SoC-Verbrauch","Gebruikte SoC","Panaudotas SoC"],
+  "capacity not measurable — details on the Battery tab":["Kapazität nicht messbar — Details im Batterie-Tab","capaciteit niet meetbaar — details op het tabblad Accu","talpos išmatuoti negalima — išsamiau Baterijos skirtuke"],
+  "Capacity could not be measured (needs a ≥30% charge while the car reports current) — verdict based on cell balance only":["Die Kapazität konnte nicht gemessen werden (erfordert eine Ladung um ≥30 %, während das Fahrzeug Stromwerte meldet) — Bewertung nur anhand der Zellbalance","De capaciteit kon niet worden gemeten (vereist een lading van ≥30% terwijl de auto stroom rapporteert) — oordeel alleen gebaseerd op celbalans","Talpos išmatuoti nepavyko (reikia ≥30 % įkrovimo, kai automobilis teikia srovės duomenis) — vertinimas pagrįstas tik celių balansu"],
+  "vehicle report":["Fahrzeugbericht","voertuigrapport","automobilio ataskaita"],
+  "remote action":["Fernaktion","actie op afstand","nuotolinis veiksmas"],
+  "error":["Fehler","fout","klaida"],
+  "factory setting is used":["Werkseinstellung wird verwendet","fabrieksinstelling wordt gebruikt","naudojama gamyklinė nuostata"],
+  "Factory default":["Werkseinstellung","Fabrieksinstelling","Gamyklinė nuostata"],
+  "Unlock all doors":["Alle Türen entriegeln","Alle portieren ontgrendelen","Atrakinti visas duris"],
+  "Climatization backend error":["Backend-Fehler der Klimatisierung","Backendfout klimaatregeling","Klimato sistemos serverio klaida"],
+  "Undated":["Ohne Datum","Zonder datum","Be datos"],
+  "Date":["Datum","Datum","Data"], "Day":["Tag","Dag","Diena"], "Time":["Zeit","Tijd","Laikas"],
+  "Kind":["Art","Soort","Tipas"], "Event":["Ereignis","Gebeurtenis","Įvykis"], "Detail":["Detail","Detail","Informacija"],
+  "Field":["Feld","Veld","Laukas"], "Fields":["Felder","Velden","Laukai"], "Records":["Einträge","Records","Įrašai"],
+  "First":["Erster","Eerste","Pirmas"], "Last":["Letzter","Laatste","Paskutinis"],
+  "Description":["Beschreibung","Beschrijving","Aprašymas"], "Sample value":["Beispielwert","Voorbeeldwaarde","Pavyzdinė reikšmė"],
+  "Raw fields":["Rohfelder","Ruwe velden","Neapdoroti laukai"], "Example raw field":["Beispiel-Rohfeld","Voorbeeld ruw veld","Neapdoroto lauko pavyzdys"],
+  "Field / indexed pattern":["Feld / indexiertes Muster","Veld / geïndexeerd patroon","Laukas / indeksuotas šablonas"],
+  "Interpreted value":["Interpretierter Wert","Geïnterpreteerde waarde","Interpretuota reikšmė"], "Raw":["Rohwert","Ruw","Neapdorota"],
+  "Source":["Quelle","Bron","Šaltinis"], "Dictionary description":["Wörterbuchbeschreibung","Beschrijving uit woordenboek","Žodyno aprašymas"],
+  "Category":["Kategorie","Categorie","Kategorija"], "In dictionary":["Im Wörterbuch","In woordenboek","Žodyne"], "In export":["Im Export","In export","Eksporte"],
+  "Speed band":["Geschwindigkeitsbereich","Snelheidsband","Greičio intervalas"], "Samples":["Messwerte","Metingen","Mėginiai"], "Share":["Anteil","Aandeel","Dalis"],
+  "Across gaps":["In Messlücken","Over meetgaten","Per spragas"], "Start":["Start","Start","Pradžia"], "Until":["Bis","Tot","Iki"],
+  "Type":["Typ","Type","Tipas"], "Duration":["Dauer","Duur","Trukmė"], "Energy in":["Energie hinein","Energie in","Įkrauta energija"],
+  "Start SoC":["Start-Ladestand","Begin-SoC","Pradinis SoC"], "End SoC":["End-Ladestand","Eind-SoC","Galutinis SoC"],
+  "Average kW":["Ø kW","Gemiddeld kW","Vidutinė kW"], "Peak kW":["Spitze kW","Piek kW","Didžiausia kW"],
+  "Curve points":["Kurvenpunkte","Curvepunten","Kreivės taškai"], "SoC window":["Ladestandsfenster","SoC-venster","SoC intervalas"],
+  "Current coverage":["Stromabdeckung","Stroomdekking","Srovės aprėptis"], "Measured usable":["Gemessen nutzbar","Gemeten bruikbaar","Išmatuota naudingoji talpa"],
+  "Energy in / SoC gained":["Energie hinein / SoC-Zuwachs","Energie in / gewonnen SoC","Energija / SoC prieaugis"],
+  "Park start":["Parkbeginn","Begin parkeren","Stovėjimo pradžia"], "SoC lost":["SoC-Verlust","SoC-verlies","Prarastas SoC"],
+  "Rate":["Rate","Tempo","Sparta"], "Mode samples":["Modus-Messwerte","Modusmetingen","Režimo mėginiai"], "Climate share":["Klimaanteil","Klimaataandeel","Klimato dalis"], "Reading":["Bewertung","Duiding","Vertinimas"],
+  "%/day":["%/Tag","%/dag","%/d."],
+  "Last sample":["Letzter Messwert","Laatste meting","Paskutinis mėginys"], "Next sample":["Nächster Messwert","Volgende meting","Kitas mėginys"],
+  "Gap":["Lücke","Meetgat","Spraga"], "Distance added":["Hinzugefügte Strecke","Toegevoegde afstand","Pridėtas atstumas"],
+  "Movement evidence in gap":["Bewegungsnachweis in der Lücke","Bewegingsbewijs in meetgat","Judėjimo įrodymai spragoje"],
+  "Likely movement window":["Wahrscheinliches Bewegungsfenster","Waarschijnlijk bewegingsvenster","Tikėtinas judėjimo laikotarpis"],
+  "Median":["Median","Mediaan","Mediana"], "Maximum":["Maximum","Maximum","Didžiausia"],
+  "Highest mV":["Höchste mV","Hoogste mV","Didžiausia mV"], "Lowest mV":["Niedrigste mV","Laagste mV","Mažiausia mV"],
+  "Median spread mV":["Median-Spannweite mV","Mediane spreiding mV","Sklaidos mediana mV"],
+  "Paired samples":["Gepaarte Messwerte","Gekoppelde metingen","Suporuoti mėginiai"], "SoC band":["SoC-Bereich","SoC-band","SoC intervalas"],
+  "Vehicle label":["Fahrzeugbezeichnung","Voertuiglabel","Automobilio žyma"], "Channel":["Kanal","Kanaal","Kanalas"],
+  "Sensor":["Sensor","Sensor","Jutiklis"], "Valve":["Ventil","Klep","Vožtuvas"], "Actuated share":["Ansteuerungsanteil","Aangestuurd aandeel","Valdymo dalis"], "Transitions":["Übergänge","Overgangen","Perėjimai"],
+  "20-min buckets":["20-Min.-Intervalle","vakken van 20 min.","20 min. intervalai"],
+  "fewer":["weniger","minder","mažiau"], "more":["mehr","meer","daugiau"],
+  "driven":["gefahren","gereden","nuvažiuota"], "charged":["geladen","geladen","įkrauta"],
+  "of moving time":["der Bewegungszeit","van bewegende tijd","judėjimo laiko"],
+  "speed samples":["Geschwindigkeitsmesswerte","snelheidsmetingen","greičio mėginiai"],
+  "reporting events":["Meldeereignisse","rapportagegebeurtenissen","duomenų siuntimo įvykiai"],
+  "Front left door":["Tür vorne links","Portier linksvoor","Priekinės kairės durys"],
+  "Front right door":["Tür vorne rechts","Portier rechtsvoor","Priekinės dešinės durys"],
+  "Rear left door":["Tür hinten links","Portier linksachter","Galinės kairės durys"],
+  "Rear right door":["Tür hinten rechts","Portier rechtsachter","Galinės dešinės durys"],
+  "Front left window":["Fenster vorne links","Ruit linksvoor","Priekinis kairysis langas"],
+  "Front right window":["Fenster vorne rechts","Ruit rechtsvoor","Priekinis dešinysis langas"],
+  "Rear left window":["Fenster hinten links","Ruit linksachter","Galinis kairysis langas"],
+  "Rear right window":["Fenster hinten rechts","Ruit rechtsachter","Galinis dešinysis langas"],
+  "Hood":["Motorhaube","Motorkap","Variklio dangtis"], "Trunk":["Kofferraum","Kofferbak","Bagažinė"],
+  "Numeric diagnostics":["Numerische Diagnosedaten","Numerieke diagnostiek","Skaitinė diagnostika"],
+  "Configuration":["Konfiguration","Configuratie","Konfigūracija"],
+  "Remote actions & reports":["Fernaktionen & Berichte","Acties op afstand & rapporten","Nuotoliniai veiksmai ir ataskaitos"],
+  "Service & maintenance":["Service & Wartung","Service & onderhoud","Aptarnavimas ir priežiūra"],
+  "Warnings & DTCs":["Warnungen & Fehlercodes","Waarschuwingen & DTC's","Įspėjimai ir gedimų kodai"],
+  "GPS or route coordinates":["GPS- oder Routenkoordinaten","GPS- of routecoördinaten","GPS arba maršruto koordinatės"],
+  "tyre-pressure values":["Reifendruckwerte","bandenspanningswaarden","padangų slėgio reikšmės"],
+  "direct battery SOH or capacity":["direkter Batterie-SOH oder Kapazität","directe accu-SOH of capaciteit","tiesioginis baterijos SOH arba talpa"],
+  "warning or DTC records":["Warnungs- oder Fehlercode-Einträge","waarschuwings- of DTC-records","įspėjimų arba gedimų kodų įrašai"],
+  "repair history":["Reparaturhistorie","reparatiehistorie","remonto istorija"]
+};
+
+/* These longer pieces occur inside sentences containing values. Keeping them
+ * separate avoids translating arbitrary raw payload text. */
+const DASHBOARD_FRAGMENTS = {
+  "Speed samples":["Geschwindigkeitsmesswerte","Snelheidsmetingen","Greičio mėginiai"],
+  "front left door":["Tür vorne links","portier linksvoor","priekinės kairės durys"],
+  "front right door":["Tür vorne rechts","portier rechtsvoor","priekinės dešinės durys"],
+  "rear left door":["Tür hinten links","portier linksachter","galinės kairės durys"],
+  "rear right door":["Tür hinten rechts","portier rechtsachter","galinės dešinės durys"],
+  "front left window":["Fenster vorne links","ruit linksvoor","priekinis kairysis langas"],
+  "front right window":["Fenster vorne rechts","ruit rechtsvoor","priekinis dešinysis langas"],
+  "rear left window":["Fenster hinten links","ruit linksachter","galinis kairysis langas"],
+  "rear right window":["Fenster hinten rechts","ruit rechtsachter","galinis dešinysis langas"],
+  "locked not safe":["verriegelt, nicht safe","vergrendeld, niet safe","užrakinta, neapsaugota"],
+  "locked safe":["sicher verriegelt","veilig vergrendeld","saugiai užrakinta"],
+  "unlocked":["entriegelt","ontgrendeld","atrakinta"],
+  "locked":["verriegelt","vergrendeld","užrakinta"],
+  "closed":["geschlossen","gesloten","uždaryta"],
+  "open":["offen","open","atidaryta"],
+  "measured":["gemessene","gemeten","išmatuotą"],
+  "assumed":["angenommene","aangenomen","numanomą"],
+  "inspection":["Inspektion","inspectie","patikra"],
+  " km/h":[" km/h"," km/u"," km/h"],
+  " kWh/100km":[" kWh/100 km"," kWh/100 km"," kWh/100 km"],
+  " %/day":[" %/Tag"," %/dag"," %/d."],
+  " /h":[" /h"," /u"," /val."],
+  " — no data":[" — keine Daten"," — geen gegevens"," — nėra duomenų"],
+  " · identifiers redacted":[" · Kennungen geschwärzt"," · identificatoren afgeschermd"," · identifikatoriai paslėpti"],
+  " · times in ":[" · Zeiten in "," · tijden in "," · laikas pagal "],
+  " fields · diagnostics ":[" Felder · Diagnosedaten "," velden · diagnostiek "," laukai · diagnostika "],
+  " records, ":[" Einträge, "," records, "," įrašai, "],
+  " · EU Data Act export · ":[" · EU-Data-Act-Export · "," · EU Data Act-export · "," · ES Duomenų akto eksportas · "],
+  "Captured between ":["Erfasst zwischen ","Vastgelegd tussen ","Užfiksuota tarp "],
+  "Captured ":["Erfasst ","Vastgelegd ","Užfiksuota "],
+  " · hover a row for its exact timestamp":[" · Zeile für den exakten Zeitpunkt berühren"," · beweeg over een rij voor het exacte tijdstip"," · užveskite ant eilutės tiksliam laikui"],
+  "% charged":[" % geladen","% geladen"," % įkrauta"],
+  "target ":["Ziel ","doel ","tikslas "],
+  "discharge ":["Entladen ","ontladen ","iškrovimas "],
+  "home storage ":["Hausspeicher ","thuisopslag ","namų kaupiklis "],
+  "Left ":["Links ","Links ","Kairėje "],
+  "right ":["rechts ","rechts ","dešinėje "],
+  "% open":[" % geöffnet","% open"," % atidaryta"],
+  "snapshot only, not a live vehicle state":["nur Momentaufnahme, kein Live-Fahrzeugstatus","alleen een momentopname, geen live voertuigstatus","tik momentinė būsena, ne tiesioginė automobilio būsena"],
+  "As of ":["Stand ","Stand per ","Būsena "],
+  " days in range":[" Tagen im Zeitraum"," dagen in de periode"," laikotarpio dienų"],
+  "highest sampled in range":["höchster Messwert im Zeitraum","hoogste meting in de periode","didžiausia laikotarpio reikšmė"],
+  "odometer movement with ≤30 min sample continuity":["Kilometerzähler-Bewegung bei ≤30 Min. Messkontinuität","kilometerbeweging met ≤30 min meetcontinuïteit","odometro pokytis, kai mėginiai ne rečiau kaip kas 30 min."],
+  "from SoC delta across ":["aus SoC-Differenz über ","uit SoC-verschil over ","iš SoC pokyčio per "],
+  " trips · ":[" Fahrten · "," ritten · "," keliones · "],
+  " km observed":[" km beobachtet"," km waargenomen"," km stebėta"],
+  "reported charging sessions in range":["gemeldete Ladevorgänge im Zeitraum","gemelde laadsessies in de periode","laikotarpyje praneštos įkrovimo sesijos"],
+  "charge events in range · pack ":["Ladevorgänge im Zeitraum · Batterie ","laadgebeurtenissen in periode · accu ","įkrovimo įvykiai laikotarpyje · baterija "],
+  " regen of traction energy · ":[" Rekuperation der Antriebsenergie · "," regeneratie van tractie-energie · "," traukos energijos atgauta · "],
+  " trips with current coverage":[" Fahrten mit Stromabdeckung"," ritten met stroomdekking"," kelionės su srovės aprėptimi"],
+  "estimated from ":["geschätzt aus ","geschat uit ","apskaičiuota iš "],
+  " parked intervals ≥8 h":[" Parkintervallen ≥8 h"," parkeerintervallen ≥8 u"," stovėjimo intervalų ≥8 val."],
+  "Consumption values are the vehicle's own normalized figures (dictionary unit: 1/h) — comparable between exports, not directly convertible to watts.":["Die Verbrauchswerte sind fahrzeugeigene normierte Größen (Wörterbucheinheit: 1/h) — zwischen Exporten vergleichbar, aber nicht direkt in Watt umrechenbar.","De verbruikswaarden zijn genormaliseerde voertuigwaarden (woordenboekeenheid: 1/u) — vergelijkbaar tussen exports, niet rechtstreeks om te rekenen naar watt.","Sąnaudų reikšmės yra paties automobilio normalizuoti dydžiai (žodyno vienetas: 1/val.) — palyginami tarp eksportų, bet tiesiogiai į vatus nekonvertuojami."],
+  "Timer IDs are delivered without array indexes; the single reported state cannot be assigned to one specific timer.":["Timer-IDs werden ohne Array-Indizes geliefert; der einzelne gemeldete Status kann keinem bestimmten Timer zugeordnet werden.","Timer-ID's worden zonder array-indexen geleverd; de ene gemelde status kan niet aan een specifieke timer worden toegewezen.","Laikmačių ID pateikti be masyvo indeksų; vienintelės būsenos negalima priskirti konkrečiam laikmačiui."],
+  "Distance reconciles to the odometer; ":["Strecke mit dem Kilometerzähler abgeglichen; ","Afstand afgestemd op de kilometerstand; ","Atstumas suderintas su odometru; "],
+  " km assigned to observed trips and ":[" km beobachteten Fahrten und "," km toegewezen aan waargenomen ritten en "," km priskirta stebėtoms kelionėms ir "],
+  " km retained in sampling gaps":[" km Messlücken zugeordnet"," km behouden in meetgaten"," km palikta matavimo spragose"],
+  "Daily allocation reconciles to the full odometer delta; hatched context is listed in the table as sampling-gap km":["Die tägliche Zuordnung entspricht der gesamten Kilometerzählerdifferenz; schraffierter Kontext ist in der Tabelle als Kilometer in Messlücken ausgewiesen.","Dagtoewijzing sluit aan op het volledige verschil in kilometerstand; gearceerde context staat in de tabel als kilometers in meetgaten.","Dienos paskirstymas suderintas su visu odometro pokyčiu; brūkšniuotas kontekstas lentelėje rodomas kaip kilometrai matavimo spragose."],
+  "Share of observed moving samples; irregular sampling means this is not exact time share":["Anteil beobachteter Bewegungsmesswerte; wegen unregelmäßiger Messung kein exakter Zeitanteil.","Aandeel waargenomen bewegende metingen; door onregelmatige bemonstering is dit geen exact tijdsaandeel.","Stebėtų judėjimo mėginių dalis; dėl netolygaus matavimo tai nėra tiksli laiko dalis."],
+  "share of samples while moving (":["Anteil der Messwerte während der Fahrt (","aandeel metingen tijdens beweging (","mėginių dalis judant ("],
+  " samples > 0 km/h in range)":[" Messwerte > 0 km/h im Zeitraum)"," metingen > 0 km/u in periode)"," mėginiai > 0 km/h laikotarpyje)"],
+  " paired samples · median ":[" gepaarte Messwerte · Median "," gekoppelde metingen · mediaan "," suporuotų mėginių · mediana "],
+  " · peak ":[" · Spitze "," · piek "," · didžiausia "],
+  " min actuated":[" Min. angesteuert"," min aangestuurd"," min. valdytas"],
+  "settings found · ":["Einstellungen gefunden · ","instellingen gevonden · ","nustatymų rasta · "],
+  " explicit values · raw encodings retained when the dictionary is ambiguous":[" explizite Werte · Rohcodierungen bleiben erhalten, wenn das Wörterbuch mehrdeutig ist"," expliciete waarden · ruwe coderingen blijven behouden als het woordenboek dubbelzinnig is"," aiškių reikšmių · neapdorotos koduotės paliekamos, kai žodynas dviprasmis"],
+  "versus ":["gegenüber ","tegenover ","palyginti su "],
+  " unique keys delivered":[" gelieferten eindeutigen Schlüsseln"," geleverde unieke sleutels"," pateiktų unikalių raktų"],
+  " delivered keys":[" gelieferten Schlüsseln"," geleverde sleutels"," pateiktų raktų"],
+  " records across ":[" Einträge in "," records over "," įrašų per "],
+  " undocumented channels":[" undokumentierten Kanälen"," ongedocumenteerde kanalen"," nedokumentuotų kanalų"],
+  "last high-volume diagnostic sample before export creation":["letzter umfangreicher Diagnosemesswert vor Erstellung des Exports","laatste omvangrijke diagnostische meting vóór aanmaak van de export","paskutinis didelės apimties diagnostikos mėginys prieš sukuriant eksportą"],
+  "Raw export spans ":["Rohdatenexport umfasst ","Ruwe export loopt van ","Neapdorotas eksportas apima "],
+  "; high-volume diagnostics span ":["; umfangreiche Diagnosedaten umfassen ","; omvangrijke diagnostiek loopt van ","; didelės apimties diagnostika apima "],
+  "Not found in this export: ":["In diesem Export nicht gefunden: ","Niet gevonden in deze export: ","Šiame eksporte nerasta: "],
+  " — the vehicle-reported charging history and activity timestamps this package does carry are shown instead.":[" — stattdessen werden die im Paket vorhandene fahrzeugeigene Ladehistorie und die Aktivitätszeitpunkte gezeigt."," — in plaats daarvan worden de voertuiglaadgeschiedenis en activiteitstijdstippen getoond die dit pakket wel bevat."," — vietoje jų rodoma pakete esanti automobilio įkrovimo istorija ir veiklos laikai."],
+  " by weekday and hour, ":[" nach Wochentag und Stunde, "," per weekdag en uur, "," pagal savaitės dieną ir valandą, "],
+  "odometer / distance history":["Kilometerzähler-/Streckenverlauf","kilometerstand-/afstandshistorie","odometro / atstumo istorija"],
+  "speed values":["Geschwindigkeitswerte","snelheidswaarden","greičio reikšmės"],
+  "cell voltages":["Zellspannungen","celspanningen","celių įtampos"],
+  "battery current":["Batteriestrom","accustroom","baterijos srovė"],
+  "GPS or route coordinates":["GPS- oder Routenkoordinaten","GPS- of routecoördinaten","GPS arba maršruto koordinatės"],
+  "tyre-pressure values":["Reifendruckwerte","bandenspanningswaarden","padangų slėgio reikšmės"],
+  "direct battery SOH or capacity":["direkter Batterie-SOH oder Kapazität","directe accu-SOH of capaciteit","tiesioginis baterijos SOH arba talpa"],
+  "warning or DTC records":["Warnungs- oder Fehlercode-Einträge","waarschuwings- of DTC-records","įspėjimų arba gedimų kodų įrašai"],
+  "repair history":["Reparaturhistorie","reparatiehistorie","remonto istorija"],
+  ". Identifiers are redacted in this HTML by default.":[". Kennungen sind in diesem HTML standardmäßig geschwärzt.",". Identificatoren zijn standaard afgeschermd in deze HTML.",". Šiame HTML identifikatoriai pagal numatymą paslėpti."],
+  "Built offline from ":["Offline erstellt aus ","Offline opgebouwd uit ","Sukurta neprisijungus iš "],
+  " · everything computed in your own browser — nothing was uploaded · ":[" · vollständig in Ihrem Browser berechnet — nichts wurde hochgeladen · "," · alles berekend in uw eigen browser — niets is geüpload · "," · viskas apskaičiuota jūsų naršyklėje — niekas neįkelta · "],
+  "observed, derived and inferred values are labelled throughout · ":["beobachtete, abgeleitete und erschlossene Werte sind durchgehend gekennzeichnet · ","waargenomen, afgeleide en geïnterpreteerde waarden zijn overal gemarkeerd · ","stebėtos, išvestos ir nustatytos reikšmės visur pažymėtos · "],
+  "the car only reports while awake — solid line segments are measured, dashed segments bridge not-reported periods":["das Fahrzeug meldet nur im Wachzustand — durchgezogene Linien sind gemessen, gestrichelte überbrücken Zeiträume ohne Meldung","de auto rapporteert alleen wanneer hij wakker is — doorgetrokken lijnen zijn gemeten, stippellijnen overbruggen perioden zonder rapportage","automobilis duomenis siunčia tik būdamas aktyvus — ištisinės linijos yra matuotos, brūkšninės jungia laikotarpius be duomenų"],
+  " · identifiers redacted by default.":[" · Kennungen standardmäßig geschwärzt."," · identificatoren standaard afgeschermd."," · identifikatoriai pagal numatymą paslėpti."],
+  "sessions":["Sitzungen","sessies","sesijos"],
+  "median":["Median","mediaan","mediana"]
+};
+
+const DASHBOARD_PATTERNS = [
+  [/^Vehicle platform (.+) reported — the MEB-specific battery capacity analysis may not apply to this vehicle\.$/,
+    ["Fahrzeugplattform $1 gemeldet — die MEB-spezifische Kapazitätsanalyse ist für dieses Fahrzeug möglicherweise nicht anwendbar.","Voertuigplatform $1 gemeld — de MEB-specifieke capaciteitsanalyse is mogelijk niet van toepassing op dit voertuig.","Pranešta automobilio platforma $1 — MEB skirta baterijos talpos analizė šiam automobiliui gali netikti."]],
+  [/^High-frequency diagnostic history ends (.+) days before this package was created — the snapshot cards are newer than the charts and ledgers\.$/,
+    ["Der hochfrequente Diagnoseverlauf endet $1 Tage vor Erstellung dieses Pakets — die Momentaufnahmen sind neuer als Diagramme und Protokolle.","De hoogfrequente diagnostische historie eindigt $1 dagen vóór dit pakket is gemaakt — de momentopnamen zijn nieuwer dan de grafieken en logboeken.","Didelio dažnio diagnostikos istorija baigiasi likus $1 d. iki paketo sukūrimo — momentinės kortelės yra naujesnės už diagramas ir žurnalus."]],
+  [/^Not delivered in this export: (.+)\. The related panels are omitted rather than shown empty(.*)$/,
+    ["In diesem Export nicht geliefert: $1. Die zugehörigen Bereiche werden ausgelassen statt leer angezeigt$2","Niet geleverd in deze export: $1. De bijbehorende panelen worden weggelaten in plaats van leeg getoond$2","Šiame eksporte nepateikta: $1. Susiję skydeliai nerodomi tušti, o visai praleidžiami$2"]],
+  [/^⚠ This package is nearly empty — only (.+) snapshot records arrived and none of the diagnostic or charging history the portal is supposed to deliver\..*$/,
+    ["⚠ Dieses Paket ist nahezu leer — nur $1 Momentaufnahmen sind angekommen und weder Diagnose- noch Ladehistorie, die das Portal liefern sollte. Das ist ein bekanntes Problem des VW-Exportdienstes, nicht Ihres Fahrzeugs oder dieses Werkzeugs. Fordern Sie den Export im Portal erneut an (vollständige Pakete benötigen oft mehrere Versuche) und erwägen Sie eine Beschwerde über das Kontaktformular. Nach EU Data Act (Art. 4–5) und DSGVO (Art. 15/20) haben Sie Anspruch auf die vollständigen Daten. Alle angekommenen Daten werden unten gezeigt; der Tab Paketprüfung nennt genau, was fehlt.","⚠ Dit pakket is bijna leeg — er zijn slechts $1 momentopnamen binnengekomen en geen diagnostische of laadgeschiedenis die het portaal hoort te leveren. Dit is een bekend probleem van VW's exportdienst, niet van uw auto of dit hulpmiddel. Vraag de export opnieuw aan in het portaal (volledige pakketten vereisen vaak meerdere pogingen) en overweeg een klacht via het contactformulier. Volgens de EU Data Act (art. 4–5) en AVG (art. 15/20) hebt u recht op de volledige gegevens. Alles wat wel aankwam staat hieronder; het tabblad Pakketaudit vermeldt precies wat ontbreekt.","⚠ Šis paketas beveik tuščias — gauti tik $1 momentinės būsenos įrašai ir nėra diagnostikos ar įkrovimo istorijos, kurią turėtų pateikti portalas. Tai žinoma VW eksporto paslaugos problema, o ne jūsų automobilio ar šio įrankio gedimas. Paprašykite eksporto portale dar kartą (pilnam paketui dažnai reikia kelių bandymų) ir apsvarstykite skundą per portalo kontaktų formą. Pagal ES Duomenų aktą (4–5 str.) ir BDAR (15/20 str.) turite teisę į visus duomenis. Visi gauti duomenys rodomi žemiau; Paketo audito skirtuke tiksliai nurodyta, ko trūksta."]],
+  [/^(.+)% charged$/,["$1 % geladen","$1% geladen","Įkrauta $1 %"]],
+  [/^target (.+)%$/,["Ziel $1 %","doel $1%","tikslas $1 %"]],
+  [/^in (.+) days \((.+)\)$/,["in $1 Tagen ($2)","over $1 dagen ($2)","po $1 dienų ($2)"]],
+  [/^in (.+) days$/,["in $1 Tagen","over $1 dagen","po $1 dienų"]],
+  [/^(.+) charge events$/,["$1 Ladevorgänge","$1 laadgebeurtenissen","$1 įkrovimo įvykiai"]],
+  [/^Sensor (.+)$/,["Sensor $1","Sensor $1","Jutiklis $1"]],
+  [/^(.+) km observed · (.+) km across sampling gaps$/,["$1 km beobachtet · $2 km in Messlücken","$1 km waargenomen · $2 km in meetgaten","$1 km stebėta · $2 km matavimo spragose"]],
+  [/^(.+) · (.+) h (.+) min$/,["$1 · $2 h $3 min","$1 · $2 u $3 min","$1 · $2 val. $3 min."]],
+  [/^(.+) h (.+) min$/,["$1 h $2 min","$1 u $2 min","$1 val. $2 min."]],
+  [/^(.+) of (.+) min$/,["$1 von $2 min","$1 van $2 min","$1 iš $2 min."]],
+  [/^(.+) min$/,["$1 min","$1 min","$1 min."]],
+  [/^(.+) h$/,["$1 h","$1 u","$1 val."]],
+  [/^≈(.+) kWh charging-energy proxy · SoH unavailable — details on the Battery tab$/,["≈$1 kWh Ladeenergie-Näherung · SOH nicht verfügbar — Details im Batterie-Tab","≈$1 kWh laadenergieproxy · SOH niet beschikbaar — details op het tabblad Accu","≈$1 kWh įkrovimo energijos pakaitinis rodiklis · SOH nėra — išsamiau Baterijos skirtuke"]],
+  [/^≈(.+) kWh usable measured · (.+) mV cell imbalance — details on the Battery tab$/,["≈$1 kWh nutzbar gemessen · $2 mV Zellabweichung — Details im Batterie-Tab","≈$1 kWh bruikbaar gemeten · $2 mV celonbalans — details op het tabblad Accu","≈$1 kWh išmatuotos naudingosios talpos · $2 mV celių disbalansas — išsamiau Baterijos skirtuke"]],
+  [/^≈ (.+) km per full charge at this rate$/,["≈ $1 km pro Vollladung bei diesem Verbrauch","≈ $1 km per volle lading bij dit verbruik","≈ $1 km su pilna įkrova esant tokioms sąnaudoms"]],
+  [/^SoC lost while parked ≥ 8 h \((.+) days observed\)$/,["SoC-Verlust beim Parken ≥ 8 h ($1 Tage beobachtet)","SoC-verlies tijdens parkeren ≥ 8 u ($1 dagen waargenomen)","SoC praradimas stovint ≥ 8 val. (stebėta $1 d.)"]],
+  [/^kWh\/100km from SoC drop while driving, using the (.+) (.+) kWh usable capacity — days with ≥20 km$/,["kWh/100 km aus dem SoC-Abfall während der Fahrt mit der $1en nutzbaren Kapazität von $2 kWh — Tage mit ≥20 km","kWh/100 km uit SoC-daling tijdens het rijden met de $1 bruikbare capaciteit van $2 kWh — dagen met ≥20 km","kWh/100 km pagal SoC sumažėjimą važiuojant, naudojant $1 $2 kWh naudingąją talpą — dienos su ≥20 km"]],
+  [/^~(.+) kWh\/100km \(SoC samples stale\)$/,["~$1 kWh/100 km (SoC-Messwerte veraltet)","~$1 kWh/100 km (SoC-metingen verouderd)","~$1 kWh/100 km (SoC mėginiai pasenę)"]],
+  [/^~(.+) kWh\/100km · (.+)% cov$/,["~$1 kWh/100 km · $2 % Abdeckung","~$1 kWh/100 km · $2% dekking","~$1 kWh/100 km · $2 % aprėptis"]],
+  [/^~(.+) kWh · (.+)% cov$/,["~$1 kWh · $2 % Abdeckung","~$1 kWh · $2% dekking","~$1 kWh · $2 % aprėptis"]],
+  [/^On · IDs (.+)$/,["Ein · IDs $1","Aan · ID's $1","Įjungta · ID $1"]],
+  [/^Off · IDs (.+)$/,["Aus · IDs $1","Uit · ID's $1","Išjungta · ID $1"]],
+  [/^of (.+) days in range$/,["von $1 Tagen im Zeitraum","van $1 dagen in de periode","iš $1 laikotarpio dienų"]],
+  [/^of (.+) delivered keys$/,["von $1 gelieferten Schlüsseln","van $1 geleverde sleutels","iš $1 pateiktų raktų"]],
+  [/^(.+) records across (.+) undocumented channels$/,["$1 Einträge in $2 undokumentierten Kanälen","$1 records over $2 ongedocumenteerde kanalen","$1 įrašų per $2 nedokumentuotų kanalų"]],
+  [/^(.+) settings found · (.+) explicit values · raw encodings retained when the dictionary is ambiguous$/,["$1 Einstellungen gefunden · $2 explizite Werte · Rohcodierungen bleiben erhalten, wenn das Wörterbuch mehrdeutig ist","$1 instellingen gevonden · $2 expliciete waarden · ruwe coderingen blijven behouden als het woordenboek dubbelzinnig is","Rasta $1 nustatymų · $2 aiškių reikšmių · neapdorotos koduotės paliekamos, kai žodynas dviprasmis"]],
+  [/^(.+) charging sessions in range, reported by the vehicle itself — energy, power and SoC window are the car's own figures$/,["$1 Ladevorgänge im Zeitraum, vom Fahrzeug selbst gemeldet — Energie, Leistung und SoC-Fenster sind fahrzeugeigene Werte","$1 laadsessies in de periode, gemeld door het voertuig zelf — energie, vermogen en SoC-venster zijn voertuigwaarden","$1 įkrovimo sesijos laikotarpyje, praneštos paties automobilio — energija, galia ir SoC intervalas yra automobilio reikšmės"]],
+  [/^(.+) continuous SoC-rise events in range; consecutive samples may be at most 30 minutes apart\. Energy\/power use the (.+) (.+) kWh usable capacity\.$/,["$1 zusammenhängende SoC-Anstiege im Zeitraum; aufeinanderfolgende Messwerte liegen höchstens 30 Minuten auseinander. Energie/Leistung verwenden die $2e nutzbare Kapazität von $3 kWh.","$1 aaneengesloten SoC-stijgingen in de periode; opeenvolgende metingen liggen maximaal 30 minuten uit elkaar. Energie/vermogen gebruikt de $2 bruikbare capaciteit van $3 kWh.","$1 nenutrūkstami SoC augimo įvykiai laikotarpyje; gretimi mėginiai nutolę ne daugiau kaip 30 min. Energijai ir galiai naudojama $2 $3 kWh naudingoji talpa."]],
+  [/^(.+) movement clusters in range, built from odometer edges with ≤30-minute continuity and split at sustained charging stops$/,["$1 Bewegungscluster im Zeitraum, aus Kilometerzählerabschnitten mit höchstens 30 Minuten Abstand gebildet und bei längeren Ladestopps geteilt","$1 bewegingsclusters in de periode, opgebouwd uit kilometerstandsranden met maximaal 30 minuten continuïteit en gesplitst bij langdurige laadstops","$1 judėjimo grupės laikotarpyje, sudarytos iš odometro atkarpų su ne ilgesniu kaip 30 min. tarpu ir atskirtos per ilgesnius įkrovimo sustojimus"]],
+  [/^(.+) parks of ≥ 8 h with no odometer movement; thermal-mode samples inside each park hint at why charge was lost$/,["$1 Parkzeiträume von ≥ 8 h ohne Kilometerzählerbewegung; Thermomodus-Messwerte deuten auf die Ursache des Ladeverlusts hin","$1 parkeerperioden van ≥ 8 u zonder kilometerbeweging; thermische modusmetingen geven een aanwijzing voor het laadverlies","$1 stovėjimo laikotarpiai po ≥ 8 val. be odometro pokyčio; šiluminio režimo mėginiai nurodo galimą įkrovos praradimo priežastį"]],
+  [/^(.+) km is proven by odometer change, but cannot be assigned to exact trips — (.+) km falls in gaps with partial timing evidence, (.+) km with none$/,["$1 km sind durch die Kilometerzähleränderung belegt, lassen sich aber keinen exakten Fahrten zuordnen — $2 km liegen in Lücken mit teilweisen Zeitnachweisen, $3 km ohne solche Nachweise","$1 km is bewezen door verandering van de kilometerstand, maar kan niet aan exacte ritten worden toegewezen — $2 km valt in gaten met gedeeltelijk tijdsbewijs, $3 km zonder bewijs","$1 km patvirtinta odometro pokyčiu, bet negalima priskirti konkrečioms kelionėms — $2 km yra spragose su daliniais laiko įrodymais, $3 km be jų"]],
+  [/^(.+) moving speed samples?( · up to (.+) km\/h)?$/,["$1 Geschwindigkeitsmesswerte in Bewegung$2","$1 bewegende snelheidsmetingen$2","$1 judėjimo greičio mėginiai$2"]],
+  [/^(.+) moving speed samples? · up to (.+) km\/h · (.+) battery-discharge samples?$/,["$1 Geschwindigkeitsmesswerte in Bewegung · bis $2 km/h · $3 Batterieentlade-Messwerte","$1 bewegende snelheidsmetingen · tot $2 km/u · $3 metingen van accuontlading","$1 judėjimo greičio mėginiai · iki $2 km/h · $3 baterijos iškrovimo mėginiai"]],
+  [/^(.+) moving speed samples? · (.+) battery-discharge samples?$/,["$1 Geschwindigkeitsmesswerte in Bewegung · $2 Batterieentlade-Messwerte","$1 bewegende snelheidsmetingen · $2 metingen van accuontlading","$1 judėjimo greičio mėginiai · $2 baterijos iškrovimo mėginiai"]],
+  [/^(.+) battery-discharge samples?$/,["$1 Batterieentlade-Messwerte","$1 metingen van accuontlading","$1 baterijos iškrovimo mėginiai"]],
+  [/^(.+) paired samples · median (.+) mV$/,["$1 gepaarte Messwerte · Median $2 mV","$1 gekoppelde metingen · mediaan $2 mV","$1 suporuotų mėginių · mediana $2 mV"]],
+  [/^(.+) samples \((.+)\)$/,["$1 Messwerte ($2)","$1 metingen ($2)","$1 mėginių ($2)"]],
+  [/^(.+) sessions$/,["$1 Sitzungen","$1 sessies","$1 sesijos"]],
+  [/^(.+) sessions? even exceed the largest pack option, demonstrating the uncertainty\.$/,["$1 Sitzung(en) überschreiten sogar die größte Batterieoption und verdeutlichen die Unsicherheit.","$1 sessie(s) overschrijden zelfs de grootste accuoptie en tonen de onzekerheid.","$1 sesija (-os) viršija net didžiausią baterijos variantą ir parodo neapibrėžtumą."]],
+  [/^(.+) shipped with (.+) kWh usable packs — the charging-energy proxy is consistent with the (.+) kWh variant, but cannot measure remaining capacity\.$/,["$1 wurde mit nutzbaren Batterien von $2 kWh ausgeliefert — die Ladeenergie-Näherung passt zur $3-kWh-Variante, kann aber die verbleibende Kapazität nicht messen.","$1 werd geleverd met bruikbare accu's van $2 kWh — de laadenergieproxy past bij de variant van $3 kWh, maar kan de resterende capaciteit niet meten.","$1 buvo tiekiamas su $2 kWh naudingosios talpos baterijomis — įkrovimo energijos pakaitinis rodiklis atitinka $3 kWh variantą, bet negali išmatuoti likusios talpos."]],
+  [/^(.+) shipped with (.+) kWh usable packs — the measured capacity matches the (.+) kWh pack\.$/,["$1 wurde mit nutzbaren Batterien von $2 kWh ausgeliefert — die gemessene Kapazität passt zur $3-kWh-Batterie.","$1 werd geleverd met bruikbare accu's van $2 kWh — de gemeten capaciteit past bij de accu van $3 kWh.","$1 buvo tiekiamas su $2 kWh naudingosios talpos baterijomis — išmatuota talpa atitinka $3 kWh bateriją."]],
+  [/^Reported charging energy \/ SoC gained has a (.+) kWh median(.*), but the export does not document where energy is metered; charging losses, auxiliaries and 1% SoC rounding mean this ratio cannot support a battery-capacity or SoH conclusion\.$/,["Gemeldete Ladeenergie / SoC-Zuwachs hat einen Median von $1 kWh$2, aber der Export dokumentiert den Messpunkt nicht; Ladeverluste, Nebenverbraucher und die SoC-Rundung auf 1 % verhindern eine Aussage zu Batteriekapazität oder SOH.","Gemelde laadenergie / gewonnen SoC heeft een mediaan van $1 kWh$2, maar de export documenteert niet waar de energie wordt gemeten; laadverliezen, hulpverbruikers en SoC-afronding op 1% maken een conclusie over accucapaciteit of SOH onmogelijk.","Praneštos įkrovimo energijos / SoC prieaugio mediana yra $1 kWh$2, tačiau eksportas nenurodo energijos matavimo vietos; įkrovimo nuostoliai, pagalbiniai vartotojai ir SoC apvalinimas iki 1 % neleidžia spręsti apie baterijos talpą ar SOH."]],
+  [/^This table divides the vehicle's reported session energy by SoC gained\. The JSON does not document where that energy is metered, and charging losses, auxiliaries and 1% SoC rounding affect the ratio\. (.*)\. The descriptive median is (.+) kWh; it is not used as battery capacity or state of health\.$/,["Diese Tabelle teilt die vom Fahrzeug gemeldete Sitzungsenergie durch den SoC-Zuwachs. Die JSON-Datei dokumentiert den Messpunkt nicht; Ladeverluste, Nebenverbraucher und die SoC-Rundung auf 1 % beeinflussen das Verhältnis. $1. Der beschreibende Median beträgt $2 kWh; er wird nicht als Batteriekapazität oder SOH verwendet.","Deze tabel deelt de door het voertuig gemelde sessie-energie door de gewonnen SoC. De JSON documenteert niet waar de energie wordt gemeten; laadverliezen, hulpverbruikers en SoC-afronding op 1% beïnvloeden de verhouding. $1. De beschrijvende mediaan is $2 kWh; deze wordt niet gebruikt als accucapaciteit of SOH.","Ši lentelė dalija automobilio praneštą sesijos energiją iš SoC prieaugio. JSON nenurodo energijos matavimo vietos; santykį veikia įkrovimo nuostoliai, pagalbiniai vartotojai ir SoC apvalinimas iki 1 %. $1. Aprašomoji mediana yra $2 kWh; ji nenaudojama kaip baterijos talpa ar SOH."]],
+  [/^Elapsed is charging start to stop; active excludes pauses; plugged-in time uses connection to disconnection\. Average power is the vehicle's reported figure and may be based on active time\.$/,["Dauer bezeichnet Ladebeginn bis Ladeende; aktiv schließt Pausen aus; angeschlossene Zeit reicht vom Verbinden bis zum Trennen. Die Durchschnittsleistung ist der vom Fahrzeug gemeldete Wert und kann auf der aktiven Zeit basieren.","Verstreken tijd loopt van laadstart tot laadstop; actief sluit pauzes uit; aangesloten tijd loopt van aansluiten tot loskoppelen. Gemiddeld vermogen is de door het voertuig gemelde waarde en kan op actieve tijd zijn gebaseerd.","Trukmė skaičiuojama nuo įkrovimo pradžios iki pabaigos; aktyvus laikas neapima pauzių; prijungimo laikas — nuo prijungimo iki atjungimo. Vidutinę galią praneša automobilis ir ji gali būti pagrįsta aktyviu laiku."]],
+  [/^Raw export spans (.+) to (.+); high-volume diagnostics span (.+) to (.+)$/,["Rohdatenexport umfasst $1 bis $2; umfangreiche Diagnosedaten umfassen $3 bis $4","Ruwe export loopt van $1 tot $2; omvangrijke diagnostiek loopt van $3 tot $4","Neapdorotas eksportas apima $1–$2; didelės apimties diagnostika apima $3–$4"]],
+  [/^Cells are well balanced \((.+) mV median spread, (.+) mV worst\)$/,["Die Zellen sind gut ausgeglichen ($1 mV Median-Spannweite, $2 mV schlechtester Wert)","De cellen zijn goed in balans ($1 mV mediane spreiding, $2 mV slechtste waarde)","Celės gerai subalansuotos ($1 mV sklaidos mediana, $2 mV blogiausia reikšmė)"]],
+  [/^Cell imbalance is elevated but acceptable \((.+) mV median, (.+) mV worst\)$/,["Die Zellabweichung ist erhöht, aber akzeptabel ($1 mV Median, $2 mV schlechtester Wert)","De celonbalans is verhoogd maar aanvaardbaar ($1 mV mediaan, $2 mV slechtste waarde)","Celių disbalansas padidėjęs, bet priimtinas ($1 mV mediana, $2 mV blogiausia reikšmė)"]],
+  [/^Cell imbalance is high \((.+) mV median, (.+) mV worst\) — worth a service check$/,["Die Zellabweichung ist hoch ($1 mV Median, $2 mV schlechtester Wert) — eine Werkstattprüfung ist sinnvoll","De celonbalans is hoog ($1 mV mediaan, $2 mV slechtste waarde) — controle bij een garage is verstandig","Celių disbalansas didelis ($1 mV mediana, $2 mV blogiausia reikšmė) — verta patikrinti servise"]],
+  [/^Measured usable capacity ≈ (.+) kWh — about (.+)% of the (.+) kWh nominal pack$/,["Gemessene nutzbare Kapazität ≈ $1 kWh — etwa $2 % der nominalen $3-kWh-Batterie","Gemeten bruikbare capaciteit ≈ $1 kWh — ongeveer $2% van de nominale accu van $3 kWh","Išmatuota naudingoji talpa ≈ $1 kWh — apie $2 % nominalios $3 kWh baterijos"]],
+  [/^Measured usable capacity ≈ (.+) kWh \(~(.+)% of nominal\) — normal aging$/,["Gemessene nutzbare Kapazität ≈ $1 kWh (~$2 % des Nennwerts) — normale Alterung","Gemeten bruikbare capaciteit ≈ $1 kWh (~$2% van nominaal) — normale veroudering","Išmatuota naudingoji talpa ≈ $1 kWh (~$2 % nominalios) — įprastas senėjimas"]],
+  [/^Measured usable capacity ≈ (.+) kWh \(~(.+)% of nominal\) — approaching the 70% warranty threshold$/,["Gemessene nutzbare Kapazität ≈ $1 kWh (~$2 % des Nennwerts) — nähert sich der 70-%-Garantiegrenze","Gemeten bruikbare capaciteit ≈ $1 kWh (~$2% van nominaal) — nadert de garantiedrempel van 70%","Išmatuota naudingoji talpa ≈ $1 kWh (~$2 % nominalios) — artėja prie 70 % garantinės ribos"]],
+  [/^How capacity was measured: battery current × pack voltage integrated over each charging session, divided by the SoC gained — measured at the battery terminals\. The median \((.+) kWh\) drives derived energy figures; wider SoC windows and fuller current coverage make an estimate more reliable\.$/,["So wurde die Kapazität gemessen: Batteriestrom × Batteriespannung über jeden Ladevorgang integriert, geteilt durch den SoC-Zuwachs — gemessen an den Batterieklemmen. Der Median ($1 kWh) bestimmt die abgeleiteten Energiewerte; größere SoC-Fenster und vollständigere Stromabdeckung machen die Schätzung zuverlässiger.","Zo is de capaciteit gemeten: accustroom × accuspanning geïntegreerd over elke laadsessie, gedeeld door de gewonnen SoC — gemeten aan de accupolen. De mediaan ($1 kWh) bepaalt de afgeleide energiewaarden; grotere SoC-vensters en vollere stroomdekking maken de schatting betrouwbaarder.","Talpa išmatuota taip: kiekvienos įkrovimo sesijos baterijos srovė × baterijos įtampa integruota ir padalyta iš SoC prieaugio — matuota ties baterijos gnybtais. Mediana ($1 kWh) naudojama išvestiniams energijos dydžiams; platesni SoC intervalai ir išsamesnė srovės aprėptis didina įverčio patikimumą."]],
+  [/^Time \((.+)\)$/,["Zeit ($1)","Tijd ($1)","Laikas ($1)"]]
+];
+
+function setDashboardLanguage(value){
+  const lang = String(value || "en").slice(0,2).toLowerCase();
+  DASHBOARD_LANGUAGE = DASHBOARD_LANGUAGE_TAGS[lang] ? lang : "en";
+  return DASHBOARD_LANGUAGE;
+}
+function dashboardLocale(){ return DASHBOARD_LANGUAGE_TAGS[DASHBOARD_LANGUAGE] || DASHBOARD_LANGUAGE_TAGS.en; }
+function dashboardTranslation(value){
+  if (value == null || DASHBOARD_LANGUAGE === "en") return value == null ? value : String(value);
+  const source = String(value), idx = {de:0,nl:1,lt:2}[DASHBOARD_LANGUAGE];
+  if (DASHBOARD_TEXT[source]) return DASHBOARD_TEXT[source][idx];
+  let out = source;
+  for (const [pattern, translations] of DASHBOARD_PATTERNS){
+    if (pattern.test(source)) { out = source.replace(pattern, translations[idx]); break; }
+  }
+  const entries = Object.entries(DASHBOARD_FRAGMENTS).sort((a,b) => b[0].length - a[0].length);
+  for (const [from, translations] of entries) if (out.includes(from)) out = out.split(from).join(translations[idx]);
+  const inline = Object.entries(DASHBOARD_TEXT).filter(([key]) => key.length >= 20)
+    .sort((a,b) => b[0].length - a[0].length);
+  for (const [from, translations] of inline) if (out.includes(from)) out = out.split(from).join(translations[idx]);
+  return out;
+}
+function localizeDashboard(root){
+  if (!root || DASHBOARD_LANGUAGE === "en") return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes){
+    const parent = node.parentElement;
+    if (!parent || parent.closest("[data-no-dashboard-i18n]") ||
+        parent.matches("table.configTable td:nth-child(2), table.configTable td:nth-child(4), table.configTable td:nth-child(6)") ||
+        parent.matches("table.eventTable td:nth-child(3), table.eventTable td:nth-child(4)") ||
+        parent.matches("table.expectedFieldsTable td:nth-child(1)") ||
+        parent.matches("#invWrap td:nth-child(1), #invWrap td:nth-child(4), #invWrap td:nth-child(5), #invWrap td:nth-child(6)")) continue;
+    const match = node.nodeValue.match(/^(\s*)([\s\S]*?)(\s*)$/);
+    if (match && match[2]) node.nodeValue = match[1] + dashboardTranslation(match[2]) + match[3];
+  }
+  for (const element of root.querySelectorAll("[title], [aria-label]")){
+    for (const attr of ["title","aria-label"]){
+      if (element.hasAttribute(attr)) element.setAttribute(attr, dashboardTranslation(element.getAttribute(attr)));
+    }
+  }
+}
+function dashboardWeekdays(){
+  const fmt = new Intl.DateTimeFormat(dashboardLocale(), {weekday:"short",timeZone:"UTC"});
+  return Array.from({length:7}, (_,i) => fmt.format(new Date(Date.UTC(2024,0,1+i))));
+}
+const REPORT_LANGUAGE = "__REPORT_LANGUAGE__";
+setDashboardLanguage(REPORT_LANGUAGE);
+document.documentElement.lang = DASHBOARD_LANGUAGE;
+document.title = document.querySelector("header.page h1").textContent + " — " + dashboardTranslation("vehicle data");
 
 /* ---------- helpers ---------- */
-const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 function loc(t){ return new Date((t + OFF) * 1000); }        // read with UTC getters
-function fmtD(t){ const d = loc(t); return MON[d.getUTCMonth()] + " " + d.getUTCDate(); }
-function fmtDT(t){ const d = loc(t);
-  return MON[d.getUTCMonth()] + " " + d.getUTCDate() + ", " +
+const shortDateFmt = new Intl.DateTimeFormat(dashboardLocale(), {month:"short",day:"numeric",timeZone:"UTC"});
+const dateTimeFmt = new Intl.DateTimeFormat(dashboardLocale(), {year:"numeric",month:"2-digit",day:"2-digit",
+  hour:"2-digit",minute:"2-digit",hourCycle:"h23",timeZone:"UTC"});
+function fmtD(t){ return shortDateFmt.format(loc(t)); }
+function fmtDT(t){ const d = loc(t); return shortDateFmt.format(d) + ", " +
     String(d.getUTCHours()).padStart(2,"0") + ":" + String(d.getUTCMinutes()).padStart(2,"0"); }
-function fmtFull(t){ if (!t) return "Undated"; const d = loc(t);
-  return d.getUTCFullYear() + "-" + String(d.getUTCMonth()+1).padStart(2,"0") + "-" +
-    String(d.getUTCDate()).padStart(2,"0") + " " + String(d.getUTCHours()).padStart(2,"0") + ":" +
-    String(d.getUTCMinutes()).padStart(2,"0"); }
+function fmtFull(t){ return t ? dateTimeFmt.format(loc(t)) : dashboardTranslation("Undated"); }
 function fmtT(t){ const d = loc(t);
   return String(d.getUTCHours()).padStart(2,"0") + ":" + String(d.getUTCMinutes()).padStart(2,"0"); }
-function fmtN(v, dec){ return Number(v).toLocaleString("en-US",
+function fmtN(v, dec){ return Number(v).toLocaleString(dashboardLocale(),
   {minimumFractionDigits:dec||0, maximumFractionDigits:dec||0}); }
 function dayKeyToT(k){ return Date.parse(k + "T00:00:00Z") / 1000 - OFF; }
 function el(tag, cls, text){ const e = document.createElement(tag);
@@ -6673,12 +7208,12 @@ function makeTip(viz){
   return {
     show(px, py, whenTxt, rows){
       tt.textContent = "";
-      if (whenTxt) tt.appendChild(el("div","when", whenTxt));
+      if (whenTxt) tt.appendChild(el("div","when", dashboardTranslation(whenTxt)));
       for (const r of rows){
         const row = el("div","row");
         if (r.color){ const k = el("span","key"); k.style.borderTopColor = r.color; row.appendChild(k); }
-        row.appendChild(el("span","v", r.value));
-        if (r.name) row.appendChild(el("span","n", r.name));
+        row.appendChild(el("span","v", dashboardTranslation(r.value)));
+        if (r.name) row.appendChild(el("span","n", dashboardTranslation(r.name)));
         tt.appendChild(row);
       }
       tt.style.display = "block";
@@ -6965,7 +7500,7 @@ function heatChart(viz, cfg){
   for (let d = 0; d < 7; d++){
     const ly = padT + d * rowH + rowH/2 + 3.5;
     const lb = svgEl("text",{x:padL-8,y:ly,"text-anchor":"end"});
-    lb.textContent = DOW[d]; svg.appendChild(lb);
+    lb.textContent = dashboardWeekdays()[d]; svg.appendChild(lb);
     for (let h = 0; h < 24; h++){
       const n = cfg.grid[d][h];
       const x = padL + h * cw, y = padT + d * rowH;
@@ -6977,7 +7512,7 @@ function heatChart(viz, cfg){
         cell = svgEl("rect",{class:"hcell",x, y, width:cw, height:rowH, rx:3, fill:seq[bin]});
       }
       cell.addEventListener("pointermove", () => tip.show(x + cw/2, y,
-        DOW[d] + " " + String(h).padStart(2,"0") + ":00–" + String(h+1).padStart(2,"0") + ":00",
+        dashboardWeekdays()[d] + " " + String(h).padStart(2,"0") + ":00–" + String(h+1).padStart(2,"0") + ":00",
         [{value: fmtN(n), name: cfg.unitName}]));
       cell.addEventListener("pointerleave", () => tip.hide());
       svg.appendChild(cell);
@@ -7049,6 +7584,8 @@ function sparkline(parent, values){
 }
 
 /* ================= page assembly ================= */
+const pretty = value => value == null ? "—" : String(value).replaceAll("_"," ").toLowerCase()
+    .replace(/^\w/, c => c.toUpperCase());
 document.getElementById("headSub").textContent =
   "VIN " + DATA.vin + " · EU Data Act export · " + fmtN(DATA.nRecords) + " records, " +
   DATA.nFields + " fields · diagnostics " + fmtD(DATA.tMin) + " – " + fmtD(DATA.tMax) +
@@ -7094,8 +7631,6 @@ document.getElementById("headSub").textContent =
 /* ---- current status cards ---- */
 (function(){
   const S = DATA.status, wrap = document.getElementById("statusCards");
-  const pretty = s => s == null ? "—" : String(s).replaceAll("_"," ").toLowerCase()
-      .replace(/^\w/, c => c.toUpperCase());
   const prettyValue = value => value == null ? null : pretty(value);
   const itemValue = item => item && item.value != null ? item.value : null;
   const itemTime = item => item && item.time ? item.time : null;
@@ -7562,7 +8097,7 @@ function renderCharts(){
   for (const [t] of spd){ const d = loc(t); grid[(d.getUTCDay()+6)%7][d.getUTCHours()]++; }
   heatChart(cards.heat.viz, { grid,
     unitName:DATA.speedRaw.length ? "speed samples" : "reporting events" });
-  cards.heat.setRows(grid.map((row,d) => [DOW[d], ...row]));
+  cards.heat.setRows(grid.map((row,d) => [dashboardWeekdays()[d], ...row]));
 
   const moving = spd.filter(p => p[1] > 0.5).map(p => p[1]);
   const top = Math.max(1, Math.floor(Math.max(0, ...moving)/10) + 1);
@@ -7752,6 +8287,7 @@ function renderCharts(){
   valveTimeline(cards.valves.viz, { t0, t1, rows: DATA.valves || [] });
   cards.valves.setRows((DATA.valves || []).map(v => [v.label, fmtN(v.samples),
     v.onPct != null ? v.onPct + "%" : "—", fmtN(v.transitions.length)]));
+  localizeDashboard(document.body);
 }
 
 /* ---- driving and charging ledgers ---- */
@@ -7883,9 +8419,11 @@ function renderActivity(){
   eg.appendChild(el("h2",null,"Remote actions, reports and errors"));
   eg.appendChild(el("div","sub","Full raw-export timeline; not limited by the diagnostic range filter"));
   eh.appendChild(eg); eh.appendChild(prov("observed")); ec.appendChild(eh);
-  const ew = el("div","tableWrap"); ew.appendChild(buildTable(
+  const ew = el("div","tableWrap");
+  const eventTable = buildTable(
     ["Time ("+DATA.tzLabel+")","Kind","Event","Detail"],
-    DATA.events.map(e => [fmtFull(e.time),e.kind,e.event,e.detail || "—"]))); ec.appendChild(ew);
+    DATA.events.map(e => [fmtFull(e.time),e.kind,e.event,e.detail || "—"]));
+  eventTable.classList.add("eventTable"); ew.appendChild(eventTable); ec.appendChild(ew);
   if (DATA.events.length) wrap.appendChild(ec);
 
   const cfg = el("div","card"), ch = el("header"), cg = el("div","grow");
@@ -7934,9 +8472,11 @@ function renderEvidence(){
   mg.appendChild(el("h2",null,"Dictionary fields cited but not delivered"));
   mg.appendChild(el("div","sub","Checked against VW's Data Dictionary V4.0 (bundled) and the JSON export"));
   mh.appendChild(mg); mh.appendChild(prov("derived")); miss.appendChild(mh);
-  const mw = el("div","tableWrap"); mw.appendChild(buildTable(
+  const mw = el("div","tableWrap");
+  const expectedFieldsTable = buildTable(
     ["Field","In dictionary","In export"],C.expectedFields.map(f =>
-      [f.field,f.dictionary ? "Yes" : "No",f.export ? "Yes" : "No"])));
+      [f.field,f.dictionary ? "Yes" : "No",f.export ? "Yes" : "No"]));
+  expectedFieldsTable.classList.add("expectedFieldsTable"); mw.appendChild(expectedFieldsTable);
   miss.appendChild(mw);
   const note = el("div","note","Not found in this export: " + C.notFound.join(", ") +
     ". Identifiers are redacted in this HTML by default.");
@@ -8063,7 +8603,7 @@ function setTab(id, skipRender){
 }
 
 /* ---- render + resize + theme redraw ---- */
-function renderAll(){ renderKpis(); renderCharts(); renderDriveTables(); }
+function renderAll(){ renderKpis(); renderCharts(); renderDriveTables(); localizeDashboard(document.body); }
 cards = makeCards();
 renderActivity();
 renderEvidence();
@@ -8089,6 +8629,7 @@ if (!DATA.cellMax.length && DATA.capEstimates.length){
 const initialTab = location.hash.replace("#","");
 setTab(TABS.some(t => t[0] === initialTab) && !hiddenTabs.has(initialTab) ? initialTab : "overview", true);
 renderAll();
+localizeDashboard(document.body);
 addEventListener("hashchange", () => {
   const h = location.hash.replace("#","");
   if (h !== activeTab && TABS.some(t => t[0] === h) && !hiddenTabs.has(h)) setTab(h);
@@ -8121,6 +8662,8 @@ def main():
                     help="usable battery capacity in kWh (default: measured only with battery-side evidence; otherwise inferred/assumed)")
     ap.add_argument("--vehicle-title", default=None,
                     help="vehicle name shown in the dashboard header (default: detected from the VIN)")
+    ap.add_argument("--language", choices=("en", "de", "nl", "lt"), default="en",
+                    help="dashboard report language (default: en)")
     args = ap.parse_args()
 
     paths = args.exports
@@ -8136,7 +8679,7 @@ def main():
     build(paths, out, price_kwh=args.price_kwh, currency=args.currency,
           csv_dir=csv_dir, include_identifiers=args.include_identifiers,
           vehicle_title=args.vehicle_title, pack_kwh=args.pack_kwh,
-          utc_offset=args.utc_offset)
+          utc_offset=args.utc_offset, language=args.language)
 
 
 if __name__ == "__main__":
