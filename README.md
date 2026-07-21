@@ -88,7 +88,9 @@ segments bridge periods where the car wasn't reporting.
 
 Requires Python 3.9+ and **nothing else** — no packages to install, and the
 only input file you need is the export JSON (field descriptions from VW's
-Data Dictionary are bundled into the script).
+Data Dictionary are bundled into the script). The bundled V4.0 index contains
+4,429 field descriptions, including every numeric configuration field and its
+`-0`/`-10` variants.
 
 Put your export JSON next to the script, then:
 
@@ -253,6 +255,23 @@ Under the **EU Data Act (Regulation 2023/2854, Arts. 4–5)** and **GDPR
 (Arts. 15/20)** you are entitled to the data VW holds, in a usable format. The
 audit tab gives you the concrete field names and numbers to cite if you decide
 to push back through the portal's contact form.
+
+## Updating the bundled Data Dictionary
+
+The dashboard never reads the PDF at runtime. If Volkswagen publishes a new
+dictionary, maintainers can regenerate the embedded Python and browser maps
+with the development-only importer (requires `pypdf`):
+
+```bash
+python3 -m pip install pypdf
+python3 tools/import_data_dictionary.py dictionary.pdf \
+  --web-dictionary ../ev-data-dashboard-web/dictionary.js
+```
+
+The importer separates the PDF's Description column from its measurement unit
+and technical datatype columns, repairs wrapped Data Point Names, validates the
+expected row count, and handles the small number of malformed table rows via a
+text-stream fallback.
 
 ## Privacy
 
