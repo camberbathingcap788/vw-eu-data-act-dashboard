@@ -2751,6 +2751,16 @@ document.getElementById("headSub").textContent =
     notes.push(DATA.status.platform === "MEB"
       ? "Vehicle platform MEB confirmed by the export — the 96-series battery analysis applies."
       : "Vehicle platform " + DATA.status.platform + " reported — the MEB-specific battery capacity analysis may not apply to this vehicle.");
+  const missing = [];
+  if (!DATA.daily.length) missing.push("odometer / distance history");
+  if (!DATA.speedRaw.length) missing.push("speed values");
+  if (!DATA.cellMax.length && !DATA.cellMin.length) missing.push("cell voltages");
+  if (!DATA.current.length) missing.push("battery current");
+  if (missing.length)
+    notes.push("Not delivered in this export: " + missing.join(", ") +
+      ". The related panels are omitted rather than shown empty" +
+      ((DATA.activity || []).length
+        ? " — the vehicle-reported charging history and activity timestamps this package does carry are shown instead." : "."));
   if (notes.length) wrap.style.marginBottom = "14px";
   for (const n of notes) wrap.appendChild(el("div","note",n));
 })();
@@ -2959,7 +2969,7 @@ document.getElementById("headSub").textContent =
   const closureCapture = capturedLabel(closureTimes);
   cc.appendChild(el("div","foot",(closureCapture ? closureCapture + " · " : "") +
     "snapshot only, not a live vehicle state"));
-  wrap.appendChild(cc);
+  if (chips.children.length) wrap.appendChild(cc);
   if (S.capturedAt){
     for (const c of [bc]) c.appendChild(el("div","foot","As of " + fmtDT(S.capturedAt)));
   }
@@ -3030,27 +3040,35 @@ function renderKpis(){
       " — details on the Battery tab"));
     wrap.appendChild(hc);
   }
-  tile("Distance driven", fmtN(dist), "km",
-       fmtN(Math.max(0,dist-gapKm)) + " km observed · " + fmtN(gapKm) + " km across sampling gaps",
-       days.map(d => d.km));
-  tile("Avg consumption", cKm ? fmtN(cE / cKm * 100, 1) : "—", "kWh/100km",
-       cKm ? "≈ " + fmtN(DATA.packKwh / (cE / cKm * 100) * 100) + " km per full charge at this rate"
-           : "days with ≥20 km, using the " + PACK_SHORT + " " + DATA.packKwh + " kWh usable");
-  tile("Energy charged", chgE ? fmtN(chgE) : "—", "kWh",
-       chg.length + " charge events" + (DATA.priceKwh && chgE
-         ? " · ~" + DATA.currency + fmtN(chgE * DATA.priceKwh) + " at " + DATA.currency + DATA.priceKwh + "/kWh" : ""));
+  if (DATA.daily.length)
+    tile("Distance driven", fmtN(dist), "km",
+         fmtN(Math.max(0,dist-gapKm)) + " km observed · " + fmtN(gapKm) + " km across sampling gaps",
+         days.map(d => d.km));
+  if (DATA.consumption.length)
+    tile("Avg consumption", cKm ? fmtN(cE / cKm * 100, 1) : "—", "kWh/100km",
+         cKm ? "≈ " + fmtN(DATA.packKwh / (cE / cKm * 100) * 100) + " km per full charge at this rate"
+             : "days with ≥20 km, using the " + PACK_SHORT + " " + DATA.packKwh + " kWh usable");
+  if (DATA.charges.length)
+    tile("Energy charged", chgE ? fmtN(chgE) : "—", "kWh",
+         chg.length + " charge events" + (DATA.priceKwh && chgE
+           ? " · ~" + DATA.currency + fmtN(chgE * DATA.priceKwh) + " at " + DATA.currency + DATA.priceKwh + "/kWh" : ""));
   const ivTrips = drives.filter(s => s.tractionKwh != null);
   const tracE = ivTrips.reduce((a,s) => a + s.tractionKwh, 0);
   const regenE = ivTrips.reduce((a,s) => a + s.regenKwh, 0);
-  tile("Regen recovered", tracE > 0 ? fmtN(regenE / tracE * 100) : "—", "%",
-       tracE > 0 ? "~" + fmtN(regenE,1) + " kWh recovered of " + fmtN(tracE,1) +
-         " kWh traction (∫I·V over " + ivTrips.length + " trips)"
-       : "needs trips with battery-current coverage");
-  tile("Idle drain", drainRate != null ? fmtN(drainRate, 1) : "—", "%/day",
-       "SoC lost while parked ≥ 8 h (" + fmtN(drainDays) + " days observed)");
-  tile("Days with driving", String(days.filter(d => d.km > 0).length), null, "of " + totDays + " days in range");
-  tile("Observed trips", String(drives.length), null, "odometer movement with ≤30 min sample continuity");
-  tile("Top speed", vmax != null ? fmtN(vmax) : "—", "km/h", "highest sampled in range");
+  if (DATA.trips.some(s => s.tractionKwh != null))
+    tile("Regen recovered", tracE > 0 ? fmtN(regenE / tracE * 100) : "—", "%",
+         tracE > 0 ? "~" + fmtN(regenE,1) + " kWh recovered of " + fmtN(tracE,1) +
+           " kWh traction (∫I·V over " + ivTrips.length + " trips)"
+         : "needs trips with battery-current coverage");
+  if (DATA.drainPairs.length)
+    tile("Idle drain", drainRate != null ? fmtN(drainRate, 1) : "—", "%/day",
+         "SoC lost while parked ≥ 8 h (" + fmtN(drainDays) + " days observed)");
+  if (DATA.daily.length)
+    tile("Days with driving", String(days.filter(d => d.km > 0).length), null, "of " + totDays + " days in range");
+  if (DATA.trips.length)
+    tile("Observed trips", String(drives.length), null, "odometer movement with ≤30 min sample continuity");
+  if (DATA.speedRaw.length)
+    tile("Top speed", vmax != null ? fmtN(vmax) : "—", "km/h", "highest sampled in range");
 }
 
 /* ---- charts ---- */
@@ -3135,6 +3153,22 @@ function makeCards(){
     ["Raw 5th percentile",fmtN(DATA.currentStats.p05,1) + " A"],
     ["Raw 95th percentile",fmtN(DATA.currentStats.p95,1) + " A"],
     ["Raw peak positive",fmtN(DATA.currentStats.max,1) + " A"]]));
+  /* different export formats carry different data — detach panels whose
+     series is absent instead of rendering them empty. The card objects stay
+     so the renderers can keep drawing into the detached nodes harmlessly. */
+  const present = {
+    daily: DATA.daily.length, heat: DATA.speedRaw.length || (DATA.activity || []).length,
+    hist: DATA.speedRaw.length, chgCurves: DATA.charges.length,
+    cons: DATA.consumption.length,
+    soc: DATA.soc.length, cells: DATA.cellMax.length || DATA.cellMin.length,
+    spread: DATA.spread.length, current: DATA.current.length,
+    spreadState: DATA.spreadCurRaw.length, spreadSoc: DATA.spreadSocRaw.length,
+    packV: DATA.packVoltage.length,
+    amb: DATA.ambient.length, modes: DATA.modeRaw.length,
+    thermal: DATA.thermal.some(s => s.pts.length), coolant: DATA.coolantFlow.length,
+    valves: (DATA.valves || []).some(v => v.transitions.length),
+  };
+  for (const k in present) if (c[k] && !present[k]) c[k].root.remove();
   return c;
 }
 
@@ -3356,7 +3390,7 @@ function renderDriveTables(){
       return row;
     }), withCost ? [3,4,6] : [3,4]));
   cc.appendChild(cs);
-  wrap.appendChild(cc);
+  if (DATA.charges.length) wrap.appendChild(cc);
 
   const trips = DATA.trips.filter(s => inR(s.start)).slice().reverse();
   const c = el("div","card");
@@ -3386,7 +3420,7 @@ function renderDriveTables(){
         cons2, iv, s.ambientC != null ? s.ambientC + " °C" : "—", current];
     }), [2,4,6,7,8]));
   c.appendChild(scroll);
-  wrap.appendChild(c);
+  if (DATA.trips.length) wrap.appendChild(c);
 
   /* parked drain events, annotated with the thermal-mode mix */
   const climaIdx = new Set(DATA.modeNames.map((m,i) => /Heizen|Kuehlen/.test(m.raw) ? i : -1).filter(i => i >= 0));
@@ -3409,7 +3443,8 @@ function renderDriveTables(){
         (drop / days).toFixed(1) + " %/day", fmtN(n),
         share != null ? share.toFixed(0) + "%" : "—", reading];
     }), [2,3,4,5,6]));
-  dc.appendChild(dw); wrap.appendChild(dc);
+  dc.appendChild(dw);
+  if (DATA.drainPairs.length) wrap.appendChild(dc);
 
   const gaps = DATA.movementGaps.filter(g => g.end >= range[0] && g.start <= range[1]).slice().reverse();
   const gc = el("div","card"), gh = el("header"), gg = el("div","grow");
@@ -3435,7 +3470,7 @@ function renderDriveTables(){
   gc.appendChild(gs);
   gc.appendChild(el("div","foot","Gaps with evidence are not promoted to trips: one gap can hide several drives, " +
     "and the sparse samples cover only a fraction of the distance. The window shows when movement is proven, not its full extent."));
-  wrap.appendChild(gc);
+  if (DATA.movementGaps.length) wrap.appendChild(gc);
 }
 
 /* ---- full-export activity and settings ---- */
@@ -3447,7 +3482,8 @@ function renderActivity(){
   eh.appendChild(eg); eh.appendChild(prov("observed")); ec.appendChild(eh);
   const ew = el("div","tableWrap"); ew.appendChild(buildTable(
     ["Time ("+DATA.tzLabel+")","Kind","Event","Detail"],
-    DATA.events.map(e => [fmtFull(e.time),e.kind,e.event,e.detail || "—"]))); ec.appendChild(ew); wrap.appendChild(ec);
+    DATA.events.map(e => [fmtFull(e.time),e.kind,e.event,e.detail || "—"]))); ec.appendChild(ew);
+  if (DATA.events.length) wrap.appendChild(ec);
 
   const cfg = el("div","card"), ch = el("header"), cg = el("div","grow");
   const explicit = DATA.configuration.filter(c => c.source === "explicit").length;
@@ -3458,7 +3494,8 @@ function renderActivity(){
   const cw = el("div","tableWrap"); cw.appendChild(buildTable(
     ["Time","Field","Interpreted value","Raw","Source","Dictionary description"],
     DATA.configuration.map(c => [fmtFull(c.time),c.field,c.value,c.raw,c.source,c.description || "—"])));
-  cfg.appendChild(cw); wrap.appendChild(cfg);
+  cfg.appendChild(cw);
+  if (DATA.configuration.length) wrap.appendChild(cfg);
 }
 
 /* ---- package completeness ---- */
@@ -3567,6 +3604,7 @@ const TABS = [
   ["audit", "Package audit"],
 ];
 const NO_FILTER_TABS = new Set(["backend","audit"]);   // full-export sections, range filter doesn't apply
+const hiddenTabs = new Set();
 const tabBar = document.getElementById("tabs");
 let activeTab = null;
 TABS.forEach(([id,label]) => {
@@ -3580,8 +3618,11 @@ TABS.forEach(([id,label]) => {
 });
 tabBar.addEventListener("keydown", e => {
   const i = TABS.findIndex(t => t[0] === activeTab);
-  if (e.key === "ArrowRight"){ setTab(TABS[(i+1) % TABS.length][0]); e.preventDefault(); }
-  if (e.key === "ArrowLeft"){ setTab(TABS[(i-1+TABS.length) % TABS.length][0]); e.preventDefault(); }
+  const step = dir => { let j = i;
+    do { j = (j + dir + TABS.length) % TABS.length; } while (hiddenTabs.has(TABS[j][0]));
+    setTab(TABS[j][0]); };
+  if (e.key === "ArrowRight"){ step(1); e.preventDefault(); }
+  if (e.key === "ArrowLeft"){ step(-1); e.preventDefault(); }
 });
 function setTab(id, skipRender){
   activeTab = id;
@@ -3602,12 +3643,29 @@ function renderAll(){ renderKpis(); renderCharts(); renderDriveTables(); }
 cards = makeCards();
 renderActivity();
 renderEvidence();
+/* hide tabs that ended up with no content for this export format */
+TABS.forEach(([tid]) => {
+  if (tid === "overview" || tid === "audit") return;
+  if (!document.getElementById("panel-" + tid).querySelector(".card")){
+    hiddenTabs.add(tid);
+    document.getElementById("tab-" + tid).style.display = "none";
+  }
+});
+/* format-appropriate section intros */
+if (!DATA.trips.length && DATA.charges.length){
+  const p = document.querySelector("#panel-driving .sectionHead p");
+  if (p) p.textContent = "This export carries the vehicle's charging history and activity timestamps rather than odometer-based trips — distance and trip panels are omitted.";
+}
+if (!DATA.cellMax.length && DATA.capEstimates.length){
+  const p = document.querySelector("#panel-battery .sectionHead p");
+  if (p) p.textContent = "Capacity here is measured from the vehicle's own reported charging sessions. This export contains no cell-voltage diagnostics, so cell-balance panels are omitted.";
+}
 const initialTab = location.hash.replace("#","");
-setTab(TABS.some(t => t[0] === initialTab) ? initialTab : "overview", true);
+setTab(TABS.some(t => t[0] === initialTab) && !hiddenTabs.has(initialTab) ? initialTab : "overview", true);
 renderAll();
 addEventListener("hashchange", () => {
   const h = location.hash.replace("#","");
-  if (h !== activeTab && TABS.some(t => t[0] === h)) setTab(h);
+  if (h !== activeTab && TABS.some(t => t[0] === h) && !hiddenTabs.has(h)) setTab(h);
 });
 let rT = null;
 addEventListener("resize", () => { clearTimeout(rT); rT = setTimeout(renderCharts, 150); });
